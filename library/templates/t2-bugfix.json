@@ -1,0 +1,40 @@
+{
+  "id": "t2-bugfix",
+  "version": "1.0.0",
+  "summary": "T2 Bugfix: Reproduce/Localize -> Patch -> RegressionVerify with one bounded fix loop.",
+  "graph": {
+    "nodes": [
+      {
+        "id": "localize",
+        "kind": "planner",
+        "agentCard": "inspector",
+        "trigger": "ALL_SUCCESS",
+        "promptTemplate": "Bug report:\n${task}\n\nLocate the defect: reproduce it from the code if possible (read-only), identify the faulty file(s)/symbol(s), and produce the plan JSON. Put the reproduction reasoning in \"summary\" and the defect location(s) in \"change_surface\"."
+      },
+      {
+        "id": "patch",
+        "kind": "worker",
+        "agentCard": "implementer",
+        "trigger": "ALL_SUCCESS",
+        "promptTemplate": "Bug report:\n${task}\n\nUpstream (localization, and verifier feedback if this is a fix pass):\n${upstream}\n\nPatch the defect minimally. If the upstream contains verifier must_fix items, address exactly those. Produce the JSON report."
+      },
+      {
+        "id": "regression",
+        "kind": "verifier",
+        "agentCard": "verifier",
+        "trigger": "ALL_SUCCESS",
+        "promptTemplate": "Bug report:\n${task}\n\nPatch report:\n${upstream}\n\nVerify the bug is fixed AND no regression was introduced (run tests via bash when available). Produce the verdict JSON."
+      }
+    ],
+    "edges": [
+      { "id": "e_in_localize", "from": "@input", "to": "localize", "kind": "DATA" },
+      { "id": "e_localize_patch", "from": "localize", "to": "patch", "kind": "DATA" },
+      { "id": "e_patch_regression", "from": "patch", "to": "regression", "kind": "DATA" },
+      { "id": "e_regression_out", "from": "regression", "to": "@output", "kind": "DATA" },
+      { "id": "e_fix_loop", "from": "regression", "to": "patch", "kind": "FEEDBACK", "loopId": "fix" }
+    ],
+    "loops": [
+      { "id": "fix", "bodyNodes": ["patch", "regression"], "feedbackEdges": ["e_fix_loop"], "maxIterations": 2 }
+    ]
+  }
+}

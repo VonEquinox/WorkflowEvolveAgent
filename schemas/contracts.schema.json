@@ -1,0 +1,373 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://workflow-evolution-agent.local/schemas/contracts.schema.json",
+  "title": "WEA Shared Task/Acceptance/Artifact/Patch/Verification Contracts v1",
+  "type": "object",
+  "properties": {
+    "schema": {
+      "const": "wea.contracts/v1"
+    },
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "kind": {
+      "const": "ContractBundle"
+    },
+    "task": {
+      "$ref": "#/$defs/task"
+    },
+    "acceptance": {
+      "$ref": "#/$defs/acceptance"
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/contractArtifact"
+      },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "patches": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/patch"
+      },
+      "uniqueItems": true
+    },
+    "verifications": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/verification"
+      },
+      "uniqueItems": true
+    },
+    "critical_fields": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    },
+    "extensions": {
+      "type": "object"
+    }
+  },
+  "required": [
+    "schema",
+    "schema_version",
+    "kind",
+    "task",
+    "acceptance",
+    "artifacts",
+    "patches",
+    "verifications"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "budget": {
+      "type": "object",
+      "properties": {
+        "wall_time_ms": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "model_tokens": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "monetary_microunits": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "wall_time_ms",
+        "model_tokens",
+        "monetary_microunits"
+      ]
+    },
+    "permissions": {
+      "type": "object",
+      "properties": {
+        "capabilities": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        "filesystem": {
+          "type": "object",
+          "properties": {
+            "read": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "uniqueItems": true
+            },
+            "write": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "uniqueItems": true
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "read",
+            "write"
+          ]
+        },
+        "network": {
+          "enum": [
+            "deny",
+            "pinned",
+            "live"
+          ]
+        },
+        "secrets": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "capabilities",
+        "filesystem",
+        "network",
+        "secrets"
+      ]
+    },
+    "task": {
+      "type": "object",
+      "properties": {
+        "task_id": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "objective": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 8192
+        },
+        "input_artifact_digests": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          },
+          "uniqueItems": true
+        },
+        "acceptance_id": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "permissions": {
+          "$ref": "#/$defs/permissions"
+        },
+        "budget": {
+          "$ref": "#/$defs/budget"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "task_id",
+        "objective",
+        "input_artifact_digests",
+        "acceptance_id",
+        "permissions",
+        "budget"
+      ]
+    },
+    "criterion": {
+      "type": "object",
+      "properties": {
+        "criterion_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9_.-]{0,127}$"
+        },
+        "assertion_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "verifier_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "required": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "criterion_id",
+        "assertion_digest",
+        "verifier_digest",
+        "required"
+      ]
+    },
+    "acceptance": {
+      "type": "object",
+      "properties": {
+        "acceptance_id": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "criteria": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/criterion"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "acceptance_id",
+        "criteria"
+      ]
+    },
+    "contractArtifact": {
+      "type": "object",
+      "properties": {
+        "artifact_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "logical_type": {
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9._/-]*@[1-9][0-9]*$"
+        },
+        "media_type": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9!#$&^_.+-]+/[A-Za-z0-9!#$&^_.+-]+(?:;.*)?$"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "artifact_digest",
+        "logical_type",
+        "media_type"
+      ]
+    },
+    "patch": {
+      "type": "object",
+      "properties": {
+        "patch_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "base_artifact_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "result_artifact_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "format": {
+          "enum": [
+            "unified-diff",
+            "json-patch",
+            "binary-delta"
+          ]
+        },
+        "touched_paths": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "patch_digest",
+        "base_artifact_digest",
+        "result_artifact_digest",
+        "format",
+        "touched_paths"
+      ]
+    },
+    "criterionResult": {
+      "type": "object",
+      "properties": {
+        "criterion_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9_.-]{0,127}$"
+        },
+        "status": {
+          "enum": [
+            "pass",
+            "fail",
+            "unknown"
+          ]
+        },
+        "evidence_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "criterion_id",
+        "status",
+        "evidence_digest"
+      ]
+    },
+    "verification": {
+      "type": "object",
+      "properties": {
+        "verification_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "subject_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "acceptance_id": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "results": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/criterionResult"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "overall": {
+          "enum": [
+            "pass",
+            "fail",
+            "unknown"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "verification_digest",
+        "subject_digest",
+        "acceptance_id",
+        "results",
+        "overall"
+      ]
+    }
+  }
+}

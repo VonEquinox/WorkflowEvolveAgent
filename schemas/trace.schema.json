@@ -1,0 +1,1091 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://workflow-evolution-agent.local/schemas/trace.schema.json",
+  "title": "WEA Execution Trace v1",
+  "type": "object",
+  "properties": {
+    "schema": {
+      "const": "wea.trace/v1"
+    },
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "kind": {
+      "const": "ExecutionTrace"
+    },
+    "run_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "trace_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{32}$"
+    },
+    "graph_revision_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "root_task_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "repo_snapshot_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "policy_epoch": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "security_partition": {
+      "type": "string",
+      "pattern": "^hmac-sha256:[0-9a-f]{64}$"
+    },
+    "started_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "ended_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "status": {
+      "enum": [
+        "success",
+        "failure",
+        "cancelled"
+      ]
+    },
+    "budget": {
+      "$ref": "#/$defs/budget"
+    },
+    "authority": {
+      "$ref": "#/$defs/authority"
+    },
+    "attempts": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/attempt"
+      },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "critical_fields": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256
+      },
+      "uniqueItems": true
+    },
+    "extensions": {
+      "type": "object"
+    },
+    "instance_ref": {
+      "$ref": "#/$defs/workflowInstanceRef"
+    },
+    "graph_delta_events": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/graphDeltaEvent"
+      },
+      "uniqueItems": true
+    }
+  },
+  "required": [
+    "schema",
+    "schema_version",
+    "kind",
+    "run_id",
+    "trace_id",
+    "graph_revision_digest",
+    "instance_ref",
+    "root_task_digest",
+    "repo_snapshot_digest",
+    "policy_epoch",
+    "security_partition",
+    "started_at",
+    "ended_at",
+    "status",
+    "budget",
+    "authority",
+    "graph_delta_events",
+    "attempts"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "budget": {
+      "type": "object",
+      "properties": {
+        "wall_time_ms": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "model_tokens": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "monetary_microunits": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "wall_time_ms",
+        "model_tokens",
+        "monetary_microunits"
+      ]
+    },
+    "permissions": {
+      "type": "object",
+      "properties": {
+        "capabilities": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "uniqueItems": true
+        },
+        "filesystem": {
+          "type": "object",
+          "properties": {
+            "read": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "uniqueItems": true
+            },
+            "write": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "uniqueItems": true
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "read",
+            "write"
+          ]
+        },
+        "network": {
+          "enum": [
+            "deny",
+            "pinned",
+            "live"
+          ]
+        },
+        "secrets": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "capabilities",
+        "filesystem",
+        "network",
+        "secrets"
+      ]
+    },
+    "gateResult": {
+      "type": "object",
+      "properties": {
+        "gate": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "status": {
+          "enum": [
+            "PASS",
+            "FAIL",
+            "UNKNOWN"
+          ]
+        },
+        "critical": {
+          "type": "boolean"
+        },
+        "evidence_digest": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2048
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "gate",
+        "status",
+        "critical",
+        "evidence_digest",
+        "reason"
+      ]
+    },
+    "dependencyObservation": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "enum": [
+            "file_content",
+            "file_metadata",
+            "directory_membership",
+            "absence",
+            "glob_result",
+            "search_result",
+            "env",
+            "toolchain",
+            "model_runtime",
+            "node_output",
+            "network",
+            "clock",
+            "random"
+          ]
+        },
+        "locator": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "selector_digest": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "observed_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "provenance": {
+          "enum": [
+            "declared",
+            "discovered"
+          ]
+        },
+        "capture_method": {
+          "enum": [
+            "sandbox",
+            "syscall_trace",
+            "tool_wrapper",
+            "dep_file",
+            "query_manifest",
+            "explicit",
+            "unknown"
+          ]
+        },
+        "completeness": {
+          "enum": [
+            "complete",
+            "conservative",
+            "incomplete"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "locator",
+        "selector_digest",
+        "observed_digest",
+        "provenance",
+        "capture_method",
+        "completeness"
+      ]
+    },
+    "dependencySelector": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "enum": [
+            "file_content",
+            "file_metadata",
+            "directory_membership",
+            "absence",
+            "glob_result",
+            "search_result",
+            "env",
+            "toolchain",
+            "model_runtime",
+            "node_output",
+            "network",
+            "clock",
+            "random"
+          ]
+        },
+        "locator": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "selector_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "locator",
+        "selector_digest"
+      ]
+    },
+    "dependencyManifest": {
+      "type": "object",
+      "properties": {
+        "root_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "negative_dependency_root": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "completeness": {
+          "enum": [
+            "complete",
+            "conservative",
+            "incomplete"
+          ]
+        },
+        "declared": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/dependencySelector"
+          },
+          "uniqueItems": true
+        },
+        "observed": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/dependencyObservation"
+          },
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "root_digest",
+        "negative_dependency_root",
+        "completeness",
+        "declared",
+        "observed"
+      ]
+    },
+    "artifactBinding": {
+      "type": "object",
+      "properties": {
+        "port": {
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9_.-]{0,127}$"
+        },
+        "type": {
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9._/-]*@[1-9][0-9]*$"
+        },
+        "artifact_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "port",
+        "type",
+        "artifact_digest"
+      ]
+    },
+    "authority": {
+      "type": "object",
+      "properties": {
+        "tenant": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "project": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "classification": {
+          "enum": [
+            "public",
+            "internal",
+            "confidential",
+            "restricted"
+          ]
+        },
+        "allowed_purposes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "permissions_granted": {
+          "$ref": "#/$defs/permissions"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "tenant",
+        "project",
+        "classification",
+        "allowed_purposes",
+        "permissions_granted"
+      ]
+    },
+    "spanContext": {
+      "type": "object",
+      "properties": {
+        "trace_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{32}$"
+        },
+        "span_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{16}$"
+        },
+        "parent_span_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{16}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "trace_id",
+        "span_id",
+        "parent_span_id"
+      ]
+    },
+    "cacheDecision": {
+      "type": "object",
+      "properties": {
+        "requested_mode": {
+          "enum": [
+            "EXACT",
+            "SEMANTIC",
+            "ADAPT",
+            "DISABLED"
+          ]
+        },
+        "final_mode": {
+          "enum": [
+            "EXACT",
+            "SEMANTIC",
+            "ADAPT",
+            "MISS",
+            "DISABLED"
+          ]
+        },
+        "candidate_artifact_digests": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          },
+          "uniqueItems": true
+        },
+        "gate_results": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/gateResult"
+          },
+          "uniqueItems": true
+        },
+        "source_attempt_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "fallback_reason": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2048
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "requested_mode",
+        "final_mode",
+        "candidate_artifact_digests",
+        "gate_results",
+        "source_attempt_id",
+        "fallback_reason"
+      ]
+    },
+    "execution": {
+      "type": "object",
+      "properties": {
+        "executor_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "model_revision": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "inference_config_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "toolchain_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "environment_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "executor_digest",
+        "model_revision",
+        "inference_config_digest",
+        "toolchain_digest",
+        "environment_digest"
+      ]
+    },
+    "attemptEffects": {
+      "type": "object",
+      "properties": {
+        "read_scope": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        "write_scope": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        "write_semantics": {
+          "enum": [
+            "none",
+            "content_addressed",
+            "idempotent",
+            "non_idempotent"
+          ]
+        },
+        "network_access": {
+          "enum": [
+            "deny",
+            "pinned",
+            "live"
+          ]
+        },
+        "external_side_effects": {
+          "enum": [
+            "none",
+            "idempotent",
+            "non_idempotent"
+          ]
+        },
+        "determinism": {
+          "enum": [
+            "deterministic",
+            "seeded",
+            "nondeterministic"
+          ]
+        },
+        "replay_policy": {
+          "enum": [
+            "safe",
+            "verify",
+            "forbidden"
+          ]
+        },
+        "observed_read_set_root": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "observed_write_set_root": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "network_events_root": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "undeclared_reads": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        "undeclared_writes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "read_scope",
+        "write_scope",
+        "write_semantics",
+        "network_access",
+        "external_side_effects",
+        "determinism",
+        "replay_policy",
+        "observed_read_set_root",
+        "observed_write_set_root",
+        "network_events_root",
+        "undeclared_reads",
+        "undeclared_writes"
+      ]
+    },
+    "timing": {
+      "type": "object",
+      "properties": {
+        "planned_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "ready_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "started_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "ended_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "planned_at",
+        "ready_at",
+        "started_at",
+        "ended_at"
+      ]
+    },
+    "cost": {
+      "type": "object",
+      "properties": {
+        "input_tokens": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "output_tokens": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "cached_input_tokens": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "wall_time_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "monetary_microunits": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "input_tokens",
+        "output_tokens",
+        "cached_input_tokens",
+        "wall_time_ms",
+        "monetary_microunits"
+      ]
+    },
+    "error": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "retryable": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "message",
+        "retryable"
+      ]
+    },
+    "attempt": {
+      "type": "object",
+      "properties": {
+        "attempt_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "attempt_no": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "span_context": {
+          "$ref": "#/$defs/spanContext"
+        },
+        "input_bindings": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/artifactBinding"
+          },
+          "uniqueItems": true
+        },
+        "dependency_manifest": {
+          "$ref": "#/$defs/dependencyManifest"
+        },
+        "outputs": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          },
+          "uniqueItems": true
+        },
+        "cache_decision": {
+          "$ref": "#/$defs/cacheDecision"
+        },
+        "execution": {
+          "$ref": "#/$defs/execution"
+        },
+        "effects": {
+          "$ref": "#/$defs/attemptEffects"
+        },
+        "permissions_used": {
+          "$ref": "#/$defs/permissions"
+        },
+        "timing": {
+          "$ref": "#/$defs/timing"
+        },
+        "cost": {
+          "$ref": "#/$defs/cost"
+        },
+        "status": {
+          "enum": [
+            "success",
+            "failure",
+            "cancelled"
+          ]
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/error"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "runtime_node": {
+          "$ref": "#/$defs/runtimeNodeIdentity"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "attempt_id",
+        "runtime_node",
+        "attempt_no",
+        "span_context",
+        "input_bindings",
+        "dependency_manifest",
+        "outputs",
+        "cache_decision",
+        "execution",
+        "effects",
+        "permissions_used",
+        "timing",
+        "cost",
+        "status",
+        "error"
+      ]
+    },
+    "templateReleaseRef": {
+      "type": "object",
+      "properties": {
+        "logical_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9_.-]*/[A-Za-z][A-Za-z0-9_.-]*$"
+        },
+        "template_version": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?$"
+        },
+        "release_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "spec_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "logical_id",
+        "template_version",
+        "release_digest",
+        "spec_digest"
+      ]
+    },
+    "workflowInstanceRef": {
+      "type": "object",
+      "properties": {
+        "instance_id": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "template_release": {
+          "$ref": "#/$defs/templateReleaseRef"
+        },
+        "instance_spec_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "instance_id",
+        "template_release",
+        "instance_spec_digest"
+      ]
+    },
+    "runtimeNodeIdentity": {
+      "type": "object",
+      "properties": {
+        "instance_id": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "runtime_node_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9_.-]{0,127}$"
+        },
+        "generation": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "template_node_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[A-Za-z][A-Za-z0-9_.-]{0,127}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "instance_id",
+        "runtime_node_id",
+        "generation",
+        "template_node_id"
+      ]
+    },
+    "runtimeEdge": {
+      "type": "object",
+      "properties": {
+        "edge_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9_.-]{0,127}$"
+        },
+        "from_node": {
+          "$ref": "#/$defs/runtimeNodeIdentity"
+        },
+        "from_port": {
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9_.-]{0,127}$"
+        },
+        "to_node": {
+          "$ref": "#/$defs/runtimeNodeIdentity"
+        },
+        "to_port": {
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9_.-]{0,127}$"
+        },
+        "kind": {
+          "enum": [
+            "DATA",
+            "CONTROL",
+            "FEEDBACK"
+          ]
+        },
+        "definition_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "edge_id",
+        "from_node",
+        "from_port",
+        "to_node",
+        "to_port",
+        "kind",
+        "definition_digest"
+      ]
+    },
+    "graphDeltaEvent": {
+      "type": "object",
+      "properties": {
+        "event_id": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "occurred_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "event_type": {
+          "enum": [
+            "NODE_ADDED",
+            "NODE_REMOVED",
+            "EDGE_ADDED",
+            "EDGE_REMOVED"
+          ]
+        },
+        "actor_attempt_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "node": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/runtimeNodeIdentity"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "edge": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/runtimeEdge"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reason_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "event_id",
+        "sequence",
+        "occurred_at",
+        "event_type",
+        "actor_attempt_id",
+        "node",
+        "edge",
+        "reason_digest"
+      ]
+    }
+  }
+}

@@ -1,0 +1,269 @@
+{
+  "schema": "wea.workflow-instance/v1",
+  "schema_version": "1.0.0",
+  "kind": "WorkflowInstance",
+  "instance_ref": {
+    "instance_id": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "template_release": {
+      "logical_id": "core/minimal-flow",
+      "template_version": "1.0.0",
+      "release_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "spec_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    "instance_spec_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+  },
+  "shape_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+  "bound_at": "2026-07-13T12:00:00Z",
+  "interface": {
+    "inputs": [
+      {
+        "id": "task",
+        "type": "wea/Task@1",
+        "required": true
+      }
+    ],
+    "outputs": [
+      {
+        "id": "verification",
+        "type": "wea/Verification@1",
+        "required": true
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "port": "task",
+      "type": "wea/Task@1",
+      "artifact_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+    }
+  ],
+  "slot_bindings": [
+    {
+      "slot": "max_attempts",
+      "binding_time": "compile",
+      "value": 1,
+      "value_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+    }
+  ],
+  "artifacts": [
+    {
+      "id": "patch_code",
+      "kind": "code",
+      "uri": "registry://minimal/patch@1",
+      "digest": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+      "entrypoint": "patch:run"
+    },
+    {
+      "id": "verify_code",
+      "kind": "evaluator",
+      "uri": "registry://minimal/verify@1",
+      "digest": "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+      "entrypoint": "verify:run"
+    }
+  ],
+  "nodes": [
+    {
+      "id": "patch",
+      "kind": "code",
+      "op_ref": "code.patch@1",
+      "ports": {
+        "inputs": [
+          {
+            "id": "task",
+            "type": "wea/Task@1",
+            "required": true
+          }
+        ],
+        "outputs": [
+          {
+            "id": "patch",
+            "type": "wea/Patch@1",
+            "required": true
+          }
+        ]
+      },
+      "artifact_refs": [
+        "patch_code"
+      ],
+      "config": {
+        "max_attempts": 1
+      },
+      "effects": {
+        "read_scope": [
+          "workspace://snapshot"
+        ],
+        "write_scope": [
+          "workspace://snapshot-out"
+        ],
+        "write_semantics": "content_addressed",
+        "network_access": "deny",
+        "external_side_effects": "none",
+        "determinism": "deterministic",
+        "replay_policy": "safe"
+      },
+      "permissions": {
+        "capabilities": [
+          "repo.read",
+          "repo.write"
+        ],
+        "filesystem": {
+          "read": [
+            "workspace://snapshot"
+          ],
+          "write": [
+            "workspace://snapshot-out"
+          ]
+        },
+        "network": "deny",
+        "secrets": []
+      },
+      "policy": {
+        "timeout_ms": 30000,
+        "retry_limit": 1,
+        "cache": "exact",
+        "idempotency": "idempotent"
+      }
+    },
+    {
+      "id": "verify",
+      "kind": "verifier",
+      "op_ref": "code.verify@1",
+      "ports": {
+        "inputs": [
+          {
+            "id": "patch",
+            "type": "wea/Patch@1",
+            "required": true
+          }
+        ],
+        "outputs": [
+          {
+            "id": "verification",
+            "type": "wea/Verification@1",
+            "required": true
+          }
+        ]
+      },
+      "artifact_refs": [
+        "verify_code"
+      ],
+      "config": {
+        "mode": "full"
+      },
+      "effects": {
+        "read_scope": [
+          "workspace://snapshot-out"
+        ],
+        "write_scope": [],
+        "write_semantics": "none",
+        "network_access": "deny",
+        "external_side_effects": "none",
+        "determinism": "deterministic",
+        "replay_policy": "safe"
+      },
+      "permissions": {
+        "capabilities": [
+          "process.exec",
+          "repo.read"
+        ],
+        "filesystem": {
+          "read": [
+            "workspace://snapshot-out"
+          ],
+          "write": []
+        },
+        "network": "deny",
+        "secrets": []
+      },
+      "policy": {
+        "timeout_ms": 30000,
+        "retry_limit": 0,
+        "cache": "exact",
+        "idempotency": "pure"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "input_task",
+      "from": {
+        "node": "@input",
+        "port": "task"
+      },
+      "to": {
+        "node": "patch",
+        "port": "task"
+      },
+      "kind": "DATA",
+      "required": true,
+      "transform_digest": null,
+      "loop_id": null
+    },
+    {
+      "id": "patch_verify",
+      "from": {
+        "node": "patch",
+        "port": "patch"
+      },
+      "to": {
+        "node": "verify",
+        "port": "patch"
+      },
+      "kind": "DATA",
+      "required": true,
+      "transform_digest": null,
+      "loop_id": null
+    },
+    {
+      "id": "verification_output",
+      "from": {
+        "node": "verify",
+        "port": "verification"
+      },
+      "to": {
+        "node": "@output",
+        "port": "verification"
+      },
+      "kind": "DATA",
+      "required": true,
+      "transform_digest": null,
+      "loop_id": null
+    }
+  ],
+  "control": {
+    "scheduler": "dataflow",
+    "activation": "all_required_inputs",
+    "max_parallelism": 2,
+    "failure_mode": "fail_fast",
+    "budgets": {
+      "wall_time_ms": 60000,
+      "model_tokens": 10000,
+      "monetary_microunits": 1000000
+    },
+    "loops": []
+  },
+  "permissions": {
+    "capabilities": [
+      "model.invoke",
+      "process.exec",
+      "repo.read",
+      "repo.write"
+    ],
+    "filesystem": {
+      "read": [
+        "workspace://snapshot",
+        "workspace://snapshot-out"
+      ],
+      "write": [
+        "workspace://snapshot-out"
+      ]
+    },
+    "network": "deny",
+    "secrets": []
+  },
+  "compiled_runtime": {
+    "runtime_version": "1.0.0",
+    "compiler_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "environment_contract_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+  }
+}

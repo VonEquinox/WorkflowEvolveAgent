@@ -1,0 +1,10 @@
+{
+  "name": "@wea/spike-phase0",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Phase 0 spike: validate pi SDK for multi-node parallel orchestration",
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "^0.80.6"
+  }
+}

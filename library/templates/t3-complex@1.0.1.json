@@ -1,0 +1,89 @@
+{
+  "id": "t3-complex",
+  "version": "1.0.1",
+  "summary": "t3-complex [auto-edit: remove_node(explore_b)]",
+  "graph": {
+    "nodes": [
+      {
+        "id": "explore_a",
+        "kind": "planner",
+        "agentCard": "explorer",
+        "trigger": "ALL_SUCCESS",
+        "promptTemplate": "Task:\n${task}\n\nYou are explorer A. Independently investigate and propose one approach. Produce the approach JSON."
+      },
+      {
+        "id": "aggregate",
+        "kind": "aggregator",
+        "agentCard": "aggregator",
+        "trigger": "ALL_SUCCESS",
+        "promptTemplate": "Task:\n${task}\n\nExplorer proposals:\n${upstream}\n\nMerge into one committed plan. Produce the plan JSON."
+      },
+      {
+        "id": "implement",
+        "kind": "worker",
+        "agentCard": "implementer",
+        "trigger": "ALL_SUCCESS",
+        "promptTemplate": "Task:\n${task}\n\nUpstream (aggregated plan, and verifier feedback if this is a fix pass):\n${upstream}\n\nImplement the change. If the upstream contains verifier must_fix items, address exactly those. Produce the JSON report."
+      },
+      {
+        "id": "verify",
+        "kind": "verifier",
+        "agentCard": "verifier",
+        "trigger": "ALL_SUCCESS",
+        "promptTemplate": "Task:\n${task}\n\nImplementer report:\n${upstream}\n\nIndependently verify and produce the verdict JSON."
+      }
+    ],
+    "edges": [
+      {
+        "id": "e_in_a",
+        "from": "@input",
+        "to": "explore_a",
+        "kind": "DATA"
+      },
+      {
+        "id": "e_a_agg",
+        "from": "explore_a",
+        "to": "aggregate",
+        "kind": "DATA"
+      },
+      {
+        "id": "e_agg_impl",
+        "from": "aggregate",
+        "to": "implement",
+        "kind": "DATA"
+      },
+      {
+        "id": "e_impl_verify",
+        "from": "implement",
+        "to": "verify",
+        "kind": "DATA"
+      },
+      {
+        "id": "e_verify_out",
+        "from": "verify",
+        "to": "@output",
+        "kind": "DATA"
+      },
+      {
+        "id": "e_fix_loop",
+        "from": "verify",
+        "to": "implement",
+        "kind": "FEEDBACK",
+        "loopId": "fix"
+      }
+    ],
+    "loops": [
+      {
+        "id": "fix",
+        "bodyNodes": [
+          "implement",
+          "verify"
+        ],
+        "feedbackEdges": [
+          "e_fix_loop"
+        ],
+        "maxIterations": 2
+      }
+    ]
+  }
+}

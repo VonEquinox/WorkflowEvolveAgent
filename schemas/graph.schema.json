@@ -1,0 +1,679 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://workflow-evolution-agent.local/schemas/graph.schema.json",
+  "title": "WEA Graph IR v1",
+  "type": "object",
+  "properties": {
+    "schema": {
+      "const": "wea.graph/v1"
+    },
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "kind": {
+      "const": "Graph"
+    },
+    "graph_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "revision_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "parent_revision_id": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "entry_node": {
+      "type": "string",
+      "pattern": "^[A-Za-z][A-Za-z0-9_.-]{0,127}$"
+    },
+    "nodes": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/graphNode"
+      },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "edges": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/edge"
+      },
+      "uniqueItems": true
+    },
+    "control": {
+      "$ref": "#/$defs/control"
+    },
+    "policies": {
+      "$ref": "#/$defs/graphPolicies"
+    },
+    "critical_fields": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256
+      },
+      "uniqueItems": true
+    },
+    "extensions": {
+      "type": "object"
+    },
+    "template_release_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/templateReleaseRef"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "schema",
+    "schema_version",
+    "kind",
+    "graph_id",
+    "revision_id",
+    "parent_revision_id",
+    "template_release_ref",
+    "entry_node",
+    "nodes",
+    "edges",
+    "control",
+    "policies"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "port": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9_.-]{0,127}$"
+        },
+        "type": {
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9._/-]*@[1-9][0-9]*$"
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 1024
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "type",
+        "required"
+      ]
+    },
+    "ports": {
+      "type": "object",
+      "properties": {
+        "inputs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/port"
+          },
+          "uniqueItems": true
+        },
+        "outputs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/port"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "inputs",
+        "outputs"
+      ]
+    },
+    "budget": {
+      "type": "object",
+      "properties": {
+        "wall_time_ms": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "model_tokens": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "monetary_microunits": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "wall_time_ms",
+        "model_tokens",
+        "monetary_microunits"
+      ]
+    },
+    "permissions": {
+      "type": "object",
+      "properties": {
+        "capabilities": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "uniqueItems": true
+        },
+        "filesystem": {
+          "type": "object",
+          "properties": {
+            "read": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "uniqueItems": true
+            },
+            "write": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "uniqueItems": true
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "read",
+            "write"
+          ]
+        },
+        "network": {
+          "enum": [
+            "deny",
+            "pinned",
+            "live"
+          ]
+        },
+        "secrets": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "capabilities",
+        "filesystem",
+        "network",
+        "secrets"
+      ]
+    },
+    "effects": {
+      "type": "object",
+      "properties": {
+        "read_scope": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        "write_scope": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        "write_semantics": {
+          "enum": [
+            "none",
+            "content_addressed",
+            "idempotent",
+            "non_idempotent"
+          ]
+        },
+        "network_access": {
+          "enum": [
+            "deny",
+            "pinned",
+            "live"
+          ]
+        },
+        "external_side_effects": {
+          "enum": [
+            "none",
+            "idempotent",
+            "non_idempotent"
+          ]
+        },
+        "determinism": {
+          "enum": [
+            "deterministic",
+            "seeded",
+            "nondeterministic"
+          ]
+        },
+        "replay_policy": {
+          "enum": [
+            "safe",
+            "verify",
+            "forbidden"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "read_scope",
+        "write_scope",
+        "write_semantics",
+        "network_access",
+        "external_side_effects",
+        "determinism",
+        "replay_policy"
+      ]
+    },
+    "cachePolicy": {
+      "type": "object",
+      "properties": {
+        "allowed_modes": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "EXACT",
+              "SEMANTIC",
+              "ADAPT"
+            ]
+          },
+          "maxItems": 3,
+          "uniqueItems": true
+        },
+        "risk_class": {
+          "enum": [
+            "S0",
+            "S1",
+            "S2",
+            "S3"
+          ]
+        },
+        "verifier_digests": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          },
+          "uniqueItems": true
+        },
+        "max_age_seconds": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "allowed_modes",
+        "risk_class",
+        "verifier_digests",
+        "max_age_seconds"
+      ]
+    },
+    "endpoint": {
+      "type": "object",
+      "properties": {
+        "node": {
+          "type": "string",
+          "pattern": "^(?:@input|@output|[A-Za-z][A-Za-z0-9_.-]{0,127})$"
+        },
+        "port": {
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9_.-]{0,127}$"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "node",
+        "port"
+      ]
+    },
+    "edge": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9_.-]{0,127}$"
+        },
+        "from": {
+          "$ref": "#/$defs/endpoint"
+        },
+        "to": {
+          "$ref": "#/$defs/endpoint"
+        },
+        "kind": {
+          "enum": [
+            "DATA",
+            "CONTROL",
+            "FEEDBACK"
+          ]
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "transform_digest": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "loop_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[A-Za-z][A-Za-z0-9_.-]{0,127}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "from",
+        "to",
+        "kind",
+        "required",
+        "transform_digest",
+        "loop_id"
+      ]
+    },
+    "termination": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "enum": [
+            "port_value",
+            "attempt_status",
+            "counter"
+          ]
+        },
+        "source": {
+          "type": "string",
+          "minLength": 1
+        },
+        "operator": {
+          "enum": [
+            "truthy",
+            "equals",
+            "not_equals",
+            "gte",
+            "lte"
+          ]
+        },
+        "value": {}
+      },
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "source",
+        "operator"
+      ]
+    },
+    "loop": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9_.-]{0,127}$"
+        },
+        "body_nodes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z][A-Za-z0-9_.-]{0,127}$"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "feedback_edges": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z][A-Za-z0-9_.-]{0,127}$"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "max_iterations": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000
+        },
+        "termination": {
+          "$ref": "#/$defs/termination"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "body_nodes",
+        "feedback_edges",
+        "max_iterations",
+        "termination"
+      ]
+    },
+    "control": {
+      "type": "object",
+      "properties": {
+        "scheduler": {
+          "const": "dataflow"
+        },
+        "activation": {
+          "enum": [
+            "all_required_inputs",
+            "any_input"
+          ]
+        },
+        "max_parallelism": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "failure_mode": {
+          "enum": [
+            "fail_fast",
+            "continue_independent",
+            "collect_all"
+          ]
+        },
+        "budgets": {
+          "$ref": "#/$defs/budget"
+        },
+        "loops": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/loop"
+          },
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "scheduler",
+        "activation",
+        "max_parallelism",
+        "failure_mode",
+        "budgets",
+        "loops"
+      ]
+    },
+    "graphNode": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9_.-]{0,127}$"
+        },
+        "operation": {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "version": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "implementation_digest": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "version",
+            "implementation_digest"
+          ]
+        },
+        "ports": {
+          "$ref": "#/$defs/ports"
+        },
+        "effects": {
+          "$ref": "#/$defs/effects"
+        },
+        "permissions": {
+          "$ref": "#/$defs/permissions"
+        },
+        "cache_policy": {
+          "$ref": "#/$defs/cachePolicy"
+        },
+        "budget": {
+          "$ref": "#/$defs/budget"
+        },
+        "timeout_ms": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "retry_limit": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 20
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "operation",
+        "ports",
+        "effects",
+        "permissions",
+        "cache_policy",
+        "budget",
+        "timeout_ms",
+        "retry_limit"
+      ]
+    },
+    "graphPolicies": {
+      "type": "object",
+      "properties": {
+        "security_policy_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "policy_epoch": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "default_cache_mode": {
+          "enum": [
+            "disabled",
+            "exact_only",
+            "proof_gated"
+          ]
+        },
+        "budget": {
+          "$ref": "#/$defs/budget"
+        },
+        "permissions": {
+          "$ref": "#/$defs/permissions"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "security_policy_digest",
+        "policy_epoch",
+        "default_cache_mode",
+        "budget",
+        "permissions"
+      ]
+    },
+    "templateReleaseRef": {
+      "type": "object",
+      "properties": {
+        "logical_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9_.-]*/[A-Za-z][A-Za-z0-9_.-]*$"
+        },
+        "template_version": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?$"
+        },
+        "release_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "spec_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "logical_id",
+        "template_version",
+        "release_digest",
+        "spec_digest"
+      ]
+    }
+  }
+}

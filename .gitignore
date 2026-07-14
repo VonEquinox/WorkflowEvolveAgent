@@ -1,0 +1,25 @@
+# secrets / local env — NEVER commit
+.env
+*.env.local
+**/.env
+
+# deps & runtime
+node_modules/
+cache/
+
+# run artifacts (traces are reproducible; keep the repo clean)
+runner/runs/
+
+# third-party reference checkout (MIT, not a runtime dep; re-checkout as needed)
+pi/
+
+# scratch
+/tmp/
+*.log
+
+# python bytecode
+__pycache__/
+*.pyc
+
+# stray nested run dir (path-bug guard)
+runner/runner/

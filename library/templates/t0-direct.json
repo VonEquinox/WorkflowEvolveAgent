@@ -1,0 +1,37 @@
+{
+  "id": "t0-direct",
+  "version": "1.0.0",
+  "summary": "T0 Direct: Inspect -> Implement -> Verify. Smallest useful flow.",
+  "graph": {
+    "nodes": [
+      {
+        "id": "inspect",
+        "kind": "planner",
+        "agentCard": "inspector",
+        "trigger": "ALL_SUCCESS",
+        "promptTemplate": "Task:\n${task}\n\nInspect the working directory and produce the plan JSON."
+      },
+      {
+        "id": "implement",
+        "kind": "worker",
+        "agentCard": "implementer",
+        "trigger": "ALL_SUCCESS",
+        "promptTemplate": "Task:\n${task}\n\nUpstream plan:\n${upstream}\n\nImplement the change and produce the JSON report."
+      },
+      {
+        "id": "verify",
+        "kind": "verifier",
+        "agentCard": "verifier",
+        "trigger": "ALL_SUCCESS",
+        "promptTemplate": "Task:\n${task}\n\nImplementer report:\n${upstream}\n\nIndependently verify and produce the verdict JSON."
+      }
+    ],
+    "edges": [
+      { "id": "e_in_inspect", "from": "@input", "to": "inspect", "kind": "DATA" },
+      { "id": "e_inspect_impl", "from": "inspect", "to": "implement", "kind": "DATA" },
+      { "id": "e_impl_verify", "from": "implement", "to": "verify", "kind": "DATA" },
+      { "id": "e_verify_out", "from": "verify", "to": "@output", "kind": "DATA" }
+    ],
+    "loops": []
+  }
+}

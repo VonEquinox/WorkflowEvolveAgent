@@ -1,0 +1,144 @@
+{
+  "schema": "wea.pvf.trace/v1",
+  "trace_id": "sample-coding-run-001",
+  "cost_basis": "tokens",
+  "default_self_weight": 1.0,
+  "low_credit_threshold": 0.0,
+  "occurrences": [
+    {
+      "id": "inspect#1",
+      "role": "repository-inspector",
+      "output_artifact_ids": ["findings"],
+      "cost": {
+        "input_tokens": 120,
+        "output_tokens": 60,
+        "dollars": 0.004,
+        "wall_time_ms": 180,
+        "critical_path_time_ms": 120
+      }
+    },
+    {
+      "id": "plan#1",
+      "role": "planner",
+      "predecessors": ["inspect#1"],
+      "input_artifact_ids": ["findings"],
+      "output_artifact_ids": ["plan"],
+      "cost": {
+        "input_tokens": 90,
+        "output_tokens": 40,
+        "dollars": 0.003,
+        "wall_time_ms": 100,
+        "critical_path_time_ms": 70
+      }
+    },
+    {
+      "id": "implement#1",
+      "role": "implementer",
+      "predecessors": ["plan#1"],
+      "input_artifact_ids": ["plan"],
+      "output_artifact_ids": ["patch"],
+      "cost": {
+        "input_tokens": 210,
+        "output_tokens": 140,
+        "dollars": 0.01,
+        "wall_time_ms": 360,
+        "critical_path_time_ms": 260
+      }
+    },
+    {
+      "id": "verify#1",
+      "role": "test-verifier",
+      "predecessors": ["implement#1"],
+      "input_artifact_ids": ["patch"],
+      "output_artifact_ids": ["test-report"],
+      "cost": {
+        "input_tokens": 55,
+        "output_tokens": 35,
+        "dollars": 0.002,
+        "wall_time_ms": 110,
+        "critical_path_time_ms": 90
+      }
+    },
+    {
+      "id": "risky-implement#1",
+      "role": "alternative-implementer",
+      "output_artifact_ids": ["risky-patch"],
+      "cost": {
+        "input_tokens": 100,
+        "output_tokens": 60,
+        "dollars": 0.005,
+        "wall_time_ms": 150,
+        "critical_path_time_ms": 100
+      }
+    },
+    {
+      "id": "reject#1",
+      "role": "safety-verifier",
+      "predecessors": ["risky-implement#1"],
+      "input_artifact_ids": ["risky-patch"],
+      "output_artifact_ids": ["rejection"],
+      "cost": {
+        "input_tokens": 45,
+        "output_tokens": 25,
+        "dollars": 0.002,
+        "wall_time_ms": 75,
+        "critical_path_time_ms": 60
+      }
+    },
+    {
+      "id": "brainstorm#1",
+      "role": "unused-brainstormer",
+      "output_artifact_ids": ["unused-idea"],
+      "cost": {
+        "input_tokens": 60,
+        "output_tokens": 40,
+        "dollars": 0.002,
+        "wall_time_ms": 80,
+        "critical_path_time_ms": 30
+      }
+    }
+  ],
+  "occurrence_edges": [
+    {"source": "inspect#1", "target": "plan#1"},
+    {"source": "plan#1", "target": "implement#1"},
+    {"source": "implement#1", "target": "verify#1"},
+    {"source": "risky-implement#1", "target": "reject#1"}
+  ],
+  "artifacts": [
+    {
+      "id": "repo-snapshot",
+      "producer": "SELF",
+      "coverage_weight": 1.0,
+      "self_weight": 1.0
+    },
+    {"id": "findings", "producer": "inspect#1", "coverage_weight": 1.0},
+    {"id": "plan", "producer": "plan#1", "coverage_weight": 1.0},
+    {"id": "patch", "producer": "implement#1", "coverage_weight": 2.0},
+    {"id": "test-report", "producer": "verify#1", "coverage_weight": 2.0},
+    {"id": "risky-patch", "producer": "risky-implement#1", "coverage_weight": 1.0},
+    {"id": "rejection", "producer": "reject#1", "coverage_weight": 1.0},
+    {"id": "unused-idea", "producer": "brainstorm#1", "coverage_weight": 1.0}
+  ],
+  "relations": [
+    {"source": "repo-snapshot", "target": "findings", "relation": "read", "weight": 0.6},
+    {"source": "SELF", "target": "findings", "weight": 1.0},
+    {"source": "findings", "target": "plan", "relation": "derive", "weight": 0.9},
+    {"source": "plan", "target": "patch", "relation": "derive", "weight": 1.0},
+    {"source": "patch", "target": "test-report", "relation": "validate", "weight": 1.0},
+    {"source": "repo-snapshot", "target": "risky-patch", "relation": "derive", "weight": 0.8},
+    {"source": "SELF", "target": "risky-patch", "weight": 1.0},
+    {"source": "risky-patch", "target": "rejection", "relation": "validate", "weight": 1.0}
+  ],
+  "terminal_anchors": [
+    {
+      "artifact_id": "test-report",
+      "utility": 1.0,
+      "kind": "retained-and-verified"
+    },
+    {
+      "artifact_id": "rejection",
+      "utility": -0.6,
+      "kind": "verifier-rejected"
+    }
+  ]
+}

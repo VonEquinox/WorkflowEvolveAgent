@@ -1,0 +1,25 @@
+{
+  "name": "@wea/runner",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "WEA L1+L2: graph scheduler + node sessions on top of pi SDK, emitting Trace IR",
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "wea": "./src/run.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "run": "tsx src/run.ts"
+  },
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "0.80.6"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.0",
+    "typescript": "^5.5.0",
+    "@types/node": "^22.0.0"
+  }
+}
