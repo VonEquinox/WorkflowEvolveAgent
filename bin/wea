@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# WEA CLI launcher — works from any cwd; loads repo .env; runs runner/src/cli.ts
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+CLI="$ROOT/runner/src/cli.ts"
+
+# Load repo .env if present (do not override already-exported vars)
+if [[ -f "$ROOT/.env" ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "$ROOT/.env"
+  set +a
+fi
+
+if [[ -f "$ROOT/runner/node_modules/tsx/dist/cli.mjs" ]] || command -v tsx >/dev/null 2>&1; then
+  if [[ -x "$ROOT/runner/node_modules/.bin/tsx" ]]; then
+    exec "$ROOT/runner/node_modules/.bin/tsx" "$CLI" "$@"
+  fi
+  exec npx --yes tsx "$CLI" "$@"
+fi
+
+# last resort: node with tsx loader from runner
+cd "$ROOT/runner"
+exec npx --yes tsx "$CLI" "$@"

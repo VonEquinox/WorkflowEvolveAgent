@@ -41,6 +41,18 @@ import { loadWeaControlConfig, type WeaControlConfig, type ControlUsage } from "
 export type RunEvent =
 	| { type: "template_resolved"; templateRef: string; why: string; planMode?: string }
 	| {
+			type: "plan_detail";
+			mode: string;
+			baseId: string;
+			version: string;
+			why: string;
+			graph: WorkflowGraph;
+			writtenPath?: string;
+			controlUsage?: ControlUsage;
+			decision?: Record<string, unknown>;
+			candidates?: unknown;
+	  }
+	| {
 			type: "run_started";
 			runId: string;
 			task: string;
@@ -302,6 +314,16 @@ export async function executeRun(opts: ExecuteOptions): Promise<ExecuteResult> {
 		cards = loaded.cards;
 		templateVersion = loaded.templateVersion;
 		emit({ type: "template_resolved", templateRef, why: resolved.why, planMode: "explicit" });
+		emit({
+			type: "plan_detail",
+			mode: "explicit",
+			baseId: plan.baseId,
+			version: templateVersion,
+			why: resolved.why,
+			graph,
+			controlUsage: plan.controlUsage,
+			decision: plan.decision,
+		});
 	} else if (plan.mode === "adapt" || plan.mode === "cold_start") {
 		// cold-start writes base file `${id}.json`; adapt writes versioned challenger.
 		if (plan.mode === "cold_start") templateRef = plan.baseId;
@@ -316,6 +338,17 @@ export async function executeRun(opts: ExecuteOptions): Promise<ExecuteResult> {
 			}
 		}
 		emit({ type: "template_resolved", templateRef, why: plan.why, planMode: plan.mode });
+		emit({
+			type: "plan_detail",
+			mode: plan.mode,
+			baseId: plan.baseId,
+			version: plan.version,
+			why: plan.why,
+			graph,
+			writtenPath: plan.writtenPath,
+			controlUsage: plan.controlUsage,
+			decision: plan.decision,
+		});
 	} else {
 		// use / offline retrieval — honour champion alias when base id
 		const champ = currentChampion(plan.baseId);
@@ -331,6 +364,18 @@ export async function executeRun(opts: ExecuteOptions): Promise<ExecuteResult> {
 			cards = loadAgentCards();
 		}
 		emit({ type: "template_resolved", templateRef, why: plan.why, planMode: plan.mode });
+		emit({
+			type: "plan_detail",
+			mode: plan.mode,
+			baseId: plan.baseId,
+			version: templateVersion,
+			why: plan.why,
+			graph,
+			writtenPath: plan.writtenPath,
+			controlUsage: plan.controlUsage,
+			decision: plan.decision,
+			candidates: plan.candidates,
+		});
 	}
 
 	// Workers never inherit control-plane model ids from graph nodes.

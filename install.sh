@@ -22,6 +22,11 @@ WorkflowEvolveAgent installer
   ./install.sh --skip-test  Install deps only
   ./install.sh --gui        Install, test, then start the web GUI
 
+After install, CLI:
+  ./bin/wea help
+  ./bin/wea run --task "..." --mode sim
+  ./bin/wea gui
+
 Requirements: Node.js >= 20, npm, bash
 EOF
       exit 0
@@ -59,6 +64,13 @@ bold "Installing @wea/runner"
   npm install --no-fund --no-audit
 )
 ok "runner dependencies"
+
+# CLI launcher
+chmod +x "$ROOT/bin/wea" 2>/dev/null || true
+if [[ -d "$ROOT/runner/node_modules/.bin" ]]; then
+  ln -sfn "$ROOT/bin/wea" "$ROOT/runner/node_modules/.bin/wea" 2>/dev/null || true
+fi
+ok "CLI: $ROOT/bin/wea  (or: cd runner && npm run wea -- …)"
 
 bold "Installing @wea/mcp-bridge"
 (

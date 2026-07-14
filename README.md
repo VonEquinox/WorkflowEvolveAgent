@@ -993,26 +993,47 @@ chmod +x install.sh
 # ./install.sh --skip-test
 ```
 
-### Offline
+### CLI (`./bin/wea`)
+
+```bash
+./bin/wea help
+./bin/wea doctor
+./bin/wea templates
+
+# Offline dry-run (no API spend) — still writes a full journal
+./bin/wea run --task "add a health check" \
+  --template t-explore-master-implement --mode sim
+
+# Live: control = WEA_*, workers = pi default model
+cp .env.example .env   # edit WEA_*
+./bin/wea run --task "node test.js fails: fix the off-by-one" \
+  --template auto --repo /path/to/target-repo --out runs
+
+./bin/wea gui
+# also: cd runner && npm run wea -- run --task "..."
+```
+
+**Run journal** (every `wea run`, under `--out/<timestamp>-id/`):
+
+| File | Contents |
+|------|----------|
+| `journal.jsonl` | Append-only stream of every event + decision |
+| `console.log` | Human-readable mirror |
+| `plan.json` | Control routing (`use`/`adapt`/`cold_start`) + graph |
+| `graphs/` | Initial / planned / handoff / replan snapshots |
+| `nodes/` | Per-node attempt outputs |
+| `handoff.N.json` | Master plan + edit graph |
+| `replan.N.json` | Escalation replan graphs |
+| `improve.json` | Post-run process proposal |
+| `summary.md` | Short human summary |
+
+### Offline tests
 
 ```bash
 cd runner
 npm test          # retrieval / cache / champion
 npm run smoke     # synthetic traces
 npm run gui       # Simulate mode in the browser
-```
-
-### Live run
-
-```bash
-cp .env.example .env   # edit WEA_*
-set -a && source .env && set +a
-cd runner
-npx tsx src/run.ts \
-  --task "node test.js fails: fix the off-by-one" \
-  --template auto \
-  --repo /path/to/target-repo \
-  --out runs
 ```
 
 ### MCP bridge tests

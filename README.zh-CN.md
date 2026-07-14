@@ -49,8 +49,33 @@ WEA 把「一次 coding agent 调用」变成一张**可版本化的工作流图
 > **运行时：** pi SDK · Node ≥ 20 · TypeScript  
 > **控制端点：** Anthropic Messages 兼容 API（`WEA_*`）  
 > **工作模型：** 交互式 pi 默认（例如 `kuaipao/grok-4.5`）  
+> **CLI：** [`./bin/wea`](./bin/wea)（`run` / `gui` / `templates` / `doctor`）  
 > **English:** [README.md](./README.md)  
 > **安装：** [`./install.sh`](./install.sh)
+
+### CLI 与运行日志
+
+```bash
+./bin/wea help
+./bin/wea doctor
+./bin/wea templates
+./bin/wea run --task "修复超时" --template auto --repo /path/to/code
+./bin/wea run --task "..." --template t-explore-master-implement --mode sim
+./bin/wea gui
+```
+
+每次 `wea run` 都会在 `--out`（默认 `./runs`）下写完整决策日志：
+
+```
+runs/<时间戳>-<id>/
+  journal.jsonl   # 全事件流（决策、图、节点）
+  console.log     # 人类可读日志
+  plan.json       # 控制面路由决策 + 图
+  graphs/         # 初始图 / handoff / replan 快照
+  nodes/          # 每个节点的输出
+  handoff.*.json / replan.*.json / improve.json
+  summary.md
+```
 
 ---
 

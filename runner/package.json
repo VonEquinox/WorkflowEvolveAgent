@@ -8,14 +8,15 @@
     "node": ">=20"
   },
   "bin": {
-    "wea": "./src/run.ts"
+    "wea": "./src/cli.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "tsx src/selftest.ts",
     "smoke": "tsx src/smoke-export.ts",
-    "run": "tsx src/run.ts",
-    "gui": "tsx src/gui-server.ts",
+    "wea": "tsx src/cli.ts",
+    "run": "tsx src/cli.ts run",
+    "gui": "tsx src/cli.ts gui",
     "retrieve": "tsx src/retrieval.ts",
     "improve": "tsx src/meta-improve.ts"
   },
