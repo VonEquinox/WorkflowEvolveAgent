@@ -21,6 +21,7 @@ import {
 	type RunnerTemplateDoc,
 } from "./template-edit.ts";
 import type { NodeOutput, NodeRunRecord, WorkflowGraph } from "./types.ts";
+import { CONTROL_PLANE_IDENTITY } from "./control-identity.ts";
 import {
 	controlComplete,
 	parseJsonObject,
@@ -72,8 +73,10 @@ export interface ReplanResult {
 	decision?: Record<string, unknown>;
 }
 
-const REPLAN_SYSTEM = `You are the WEA MASTER control agent. A worker node on the current workflow
-graph raised an ESCALATION (exception). The current plan is stuck or wrong.
+const REPLAN_SYSTEM = `${CONTROL_PLANE_IDENTITY}
+You are the WEA MASTER **escalation replan** agent. A weaker pi worker raised an
+ESCALATION — the current plan/graph is stuck or wrong. Workers could not finish
+under the old topology; **you** take the hard thinking now.
 
 You receive:
   - the original user task
@@ -81,10 +84,13 @@ You receive:
   - every node attempt so far (summaries, errors, escalate payload)
   - the escalation reason
 
-Your job: invent a BETTER workflow graph to continue (or restart) the task.
+Your job: invent a BETTER workflow graph and (via prompts) a clearer strategy
+for workers. You still do NOT write application code — you re-orchestrate.
 Prefer a small, focused graph (2–6 nodes). You may reuse successful upstream
 artifacts by naming them in promptTemplates (workers will see prior node outputs
-when edges connect them).
+when edges connect them). Put recon on inspector/explorer, coding on implementer,
+checks on verifier; put any remaining hard planning into implementer prompts as
+concrete steps you authored, not open-ended "design the system" asks.
 
 Agent cards: inspector, explorer, aggregator, implementer, verifier
 Node kinds: planner | worker | verifier | aggregator
@@ -242,11 +248,14 @@ export interface ImproveResult {
 	applied: boolean;
 }
 
-const IMPROVE_SYSTEM = `You are the WEA MASTER control agent doing POST-RUN process verification
-and workflow optimization.
+const IMPROVE_SYSTEM = `${CONTROL_PLANE_IDENTITY}
+You are the WEA MASTER doing **post-run process verification** and workflow
+optimization. You are stronger than the workers that just ran — use that to
+judge process quality, not to rewrite their code.
 
 You do NOT re-implement the coding task. You review HOW the multi-agent process
-went and decide whether the workflow GRAPH should evolve.
+went and decide whether the workflow GRAPH should evolve so future runs put hard
+planning on control and mechanical work on workers more cleanly.
 
 Emit wea.proposal/v2 to adapt the template that just ran, OR empty edits if the
 process was already good.
@@ -428,16 +437,21 @@ export interface MasterHandoffResult {
 }
 
 const HANDOFF_SYSTEM = [
-	"You are the WEA MASTER control agent at a PROACTIVE HANDOFF point in a workflow graph.",
+	CONTROL_PLANE_IDENTITY,
+	"You are at a PROACTIVE HANDOFF point in a workflow graph.",
 	"",
-	"Cheap worker models (explorers / inspectors) already ran. Their findings are in",
-	"the context. YOU are the strong model. You now:",
+	"Cheap pi worker models (explorers / inspectors) already ran. Their findings are in",
+	"the context. YOU are the strong model — this is why the graph paused for you.",
+	"Actively take on the hard work now:",
 	"",
-	"1. Synthesize a precise MASTER IMPLEMENTATION PLAN from the upstream findings",
-	"2. Choose (or invent) a CODE-EDIT subgraph that worker coding agents will run",
+	"1. Resolve conflicts / noise in upstream findings (you decide which approach wins)",
+	"2. Synthesize a precise MASTER IMPLEMENTATION PLAN (architecture-level choices yours)",
+	"3. Choose (or invent) a CODE-EDIT subgraph that weaker coding workers will run",
 	"   with your plan injected as context",
 	"",
-	"You do NOT edit the repository yourself. Workers will.",
+	"You do NOT edit the repository yourself. Workers will implement YOUR plan.",
+	"If the task is hard, make the hard decisions in master_plan — do not leave",
+	"open design questions for the implementer.",
 	"",
 	"Prefer the standard implement→verify shape unless the task needs something else:",
 	"  implement (implementer) → verify (verifier) + optional FEEDBACK fix loop",

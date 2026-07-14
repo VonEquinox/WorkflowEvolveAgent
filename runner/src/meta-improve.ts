@@ -13,6 +13,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { CONTROL_PLANE_IDENTITY } from "./control-identity.ts";
 import { loadTemplate } from "./library.ts";
 import {
 	applyProposal,
@@ -45,9 +46,11 @@ function parseArgs(argv: string[]): Args {
 	};
 }
 
-const META_SYSTEM = `You are the meta-improvement node of a self-evolving coding-agent system.
-You redesign workflow templates. Worker agents that later execute the graph use the
-user's default pi model — do NOT set per-node model fields.
+const META_SYSTEM = `${CONTROL_PLANE_IDENTITY}
+You are the **meta-improvement** node of a self-evolving coding-agent system.
+You redesign workflow templates (process), not application code. Workers that later
+execute the graph use the user's default pi model — do NOT set per-node model fields.
+Prefer evolutions that keep hard planning on control/handoff and mechanical work on workers.
 
 OUTPUT: exactly one JSON object (wea.proposal/v2), no markdown:
 

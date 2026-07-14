@@ -11,8 +11,18 @@ challenger **wins a paired comparison** against the current champion.
 
 | Plane | Env / config | Role |
 |-------|----------------|------|
-| **WEA control** | `WEA_BASE_URL` / `WEA_API_KEY` / `WEA_MODEL` | Plan: retrieve best graph → **adapt** or **cold-start** → (later) meta-improve |
-| **pi workers** | `~/.pi/agent` default provider/model | Every graph node (`inspect` / `implement` / `verify` / …) |
+| **WEA control** (stronger) | `WEA_BASE_URL` / `WEA_API_KEY` / `WEA_MODEL` | Hard thinking only: classify, **plan graphs**, master handoff plans, replan, process evolve — **never write app code** |
+| **pi workers** (cheaper) | `~/.pi/agent` default provider/model | Graph nodes: explore / inspect / **implement code** / verify |
+
+**Capability contract** (injected into every control system prompt via
+`runner/src/control-identity.ts`):
+
+- Control **is stronger** than workers → it must **actively own** complex
+  planning, conflict resolution, graph design, and master plans.
+- Control **does not** edit the repository; implementers do, under a plan
+  concrete enough for a weaker coding model.
+- Complex tasks should prefer explore → master-handoff → implement shapes,
+  not “dump architecture on the implementer alone.”
 
 Default live path for `--template auto`:
 

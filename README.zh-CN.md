@@ -8,8 +8,14 @@ WEA 把「一次 coding agent 调用」变成一张**可版本化的工作流图
 
 | 平面 | 配置 | 职责 |
 |------|------|------|
-| **WEA 控制面** | `WEA_BASE_URL` / `WEA_API_KEY` / `WEA_MODEL` | 选图、改图（adapt）、冷启动新图、meta 进化 |
-| **pi 工作面** | `~/.pi/agent` 默认 provider/model | 图上每个节点（inspect / implement / verify …） |
+| **WEA 控制面**（更强） | `WEA_BASE_URL` / `WEA_API_KEY` / `WEA_MODEL` | 只做重活：分类、**画/改图**、master 规划、replan、流程进化 — **绝不写业务代码** |
+| **pi 工作面**（更便宜） | `~/.pi/agent` 默认 provider/model | 图节点：探索 / 侦察 / **写代码** / 校验 |
+
+**能力契约**（注入所有控制面 system prompt，见 `runner/src/control-identity.ts`）：
+
+- 控制面 **比工人强** → 必须 **主动承担** 复杂规划、冲突裁决、图设计、master plan。
+- 控制面 **不改仓库**；implementer 按足够具体的计划写代码。
+- 复杂任务优先 explore → master-handoff → implement，而不是把架构全丢给 implementer。
 
 默认 live（`--template auto`）流程：
 
