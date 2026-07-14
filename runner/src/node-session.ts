@@ -78,6 +78,8 @@ export interface RunNodeParams {
 	timing: { plannedAt: string; readyAt: string };
 	/** Per-node model override (WEA endpoint model id); omitted = run-level model. */
 	modelOverride?: string;
+	/** Optional live tap for GUI/progress: tool calls + usage as they happen. */
+	onActivity?: (a: import("./recorder-ext.ts").RecorderActivity) => void;
 }
 
 /**
@@ -148,7 +150,12 @@ export async function runNode(params: RunNodeParams): Promise<NodeRunRecord> {
 		extensionFactories: [
 			{
 				name: `wea-recorder-${params.nodeId}`,
-				factory: makeRecorder(sink, { cwd: params.cwd, repoRoot: params.repoRoot, ledger }),
+				factory: makeRecorder(sink, {
+					cwd: params.cwd,
+					repoRoot: params.repoRoot,
+					ledger,
+					onActivity: params.onActivity,
+				}),
 			},
 		],
 	});

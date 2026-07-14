@@ -15,6 +15,7 @@
     "test": "tsx src/selftest.ts",
     "smoke": "tsx src/smoke-export.ts",
     "run": "tsx src/run.ts",
+    "gui": "tsx src/gui-server.ts",
     "retrieve": "tsx src/retrieval.ts",
     "improve": "tsx src/meta-improve.ts"
   },

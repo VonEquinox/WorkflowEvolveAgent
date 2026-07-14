@@ -98,11 +98,30 @@ export function makeSink(): RecorderSink {
 const READ_TOOLS = new Set(["read", "grep", "find", "ls"]);
 const WRITE_TOOLS = new Set(["edit", "write"]);
 
+/** A live activity ping from inside a node session (for GUI/progress surfaces). */
+export type RecorderActivity =
+	| { kind: "tool_call"; tool: string; detail: string }
+	| { kind: "tool_result"; tool: string; isError: boolean; chars: number }
+	| { kind: "llm"; inputTokens: number; outputTokens: number; costMicrounits: number };
+
 interface RecorderOptions {
 	cwd: string;
 	repoRoot: string;
 	ledger: BudgetLedger;
 	sensitive?: RegExp[];
+	/** optional live tap — fired as events happen, in addition to the sink. */
+	onActivity?: (a: RecorderActivity) => void;
+}
+
+/** One-line human summary of a tool call's input (for live progress display). */
+function summarizeInput(tool: string, input: Record<string, unknown>): string {
+	const s = (v: unknown) => (typeof v === "string" ? v : JSON.stringify(v) ?? "");
+	if (typeof input.path === "string") return input.path;
+	if (typeof input.pattern === "string") return input.pattern;
+	if (typeof input.command === "string") return s(input.command).slice(0, 80);
+	if (typeof input.file_path === "string") return input.file_path;
+	const first = Object.values(input)[0];
+	return first === undefined ? tool : s(first).slice(0, 80);
 }
 
 /**
@@ -116,6 +135,7 @@ export function makeRecorder(sink: RecorderSink, opts: RecorderOptions) {
 		pi.on("tool_call", async (event: any) => {
 			sink.toolCalls.push({ tool: event.toolName, toolCallId: event.toolCallId, input: { ...event.input } });
 			if (event.toolName === "bash") sink.usedBash = true;
+			opts.onActivity?.({ kind: "tool_call", tool: event.toolName, detail: summarizeInput(event.toolName, event.input ?? {}) });
 			return undefined; // observe only, never block/mutate
 		});
 
@@ -192,6 +212,7 @@ export function makeRecorder(sink: RecorderSink, opts: RecorderOptions) {
 				details: event.details ?? null,
 			});
 			seenResultDigests.set(event.toolCallId, contentDigest);
+			opts.onActivity?.({ kind: "tool_result", tool, isError: !!event.isError, chars: text.length });
 			return undefined;
 		});
 
@@ -200,6 +221,12 @@ export function makeRecorder(sink: RecorderSink, opts: RecorderOptions) {
 			if (m?.role === "assistant" && m.usage) {
 				const sample = toUsageSample(m.usage);
 				sink.usage.push(sample);
+				opts.onActivity?.({
+					kind: "llm",
+					inputTokens: sample.input,
+					outputTokens: sample.output,
+					costMicrounits: sample.costMicrounits,
+				});
 				if (opts.ledger.charge(sample)) {
 					sink.abortedForBudget = true;
 					ctx?.abort?.(); // hard budget enforcement (§6)

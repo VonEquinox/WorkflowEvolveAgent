@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>WEA — Workflow Evolve Agent</title>
+<link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+<div class="app">
+
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">▣</span>
+      <span class="brand-name">WEA</span>
+      <span class="brand-sub">workflow evolve agent</span>
+    </div>
+    <div class="run-chip" id="runChip" data-state="idle">
+      <span class="chip-icon" id="chipIcon">○</span>
+      <span class="chip-label" id="chipLabel">idle</span>
+    </div>
+    <div class="stats">
+      <div class="stat"><span class="stat-label">tokens</span><span class="stat-value" id="statTokens">—</span></div>
+      <div class="stat"><span class="stat-label">cost</span><span class="stat-value" id="statCost">—</span></div>
+      <div class="stat"><span class="stat-label">elapsed</span><span class="stat-value" id="statElapsed">—</span></div>
+      <div class="stat"><span class="stat-label">nodes</span><span class="stat-value" id="statNodes">—</span></div>
+    </div>
+  </header>
+
+  <aside class="panel">
+    <form id="runForm">
+      <label class="field">
+        <span class="field-label">Task</span>
+        <textarea id="task" rows="5" placeholder="e.g. node test.js fails with 'slugify must be exported' — implement and export slugify(s) in strutil.js so tests pass" required></textarea>
+      </label>
+      <label class="field">
+        <span class="field-label">Workflow template</span>
+        <select id="template">
+          <option value="auto">auto — retrieval picks</option>
+        </select>
+      </label>
+      <label class="field">
+        <span class="field-label">Target repo</span>
+        <input id="repo" type="text" placeholder="/tmp/wea-sandbox2" />
+      </label>
+      <div class="field">
+        <span class="field-label">Mode</span>
+        <div class="segmented" id="modeSeg">
+          <button type="button" class="seg-btn selected" data-mode="sim" id="simBtn">Simulate</button>
+          <button type="button" class="seg-btn" data-mode="live" id="liveBtn" title="needs WEA_* env on the server">Live</button>
+        </div>
+        <p class="field-hint" id="modeHint">simulate: full scheduling demo, no endpoint, no spend</p>
+      </div>
+      <button type="submit" class="run-btn" id="runBtn">Run workflow</button>
+    </form>
+
+    <div class="legend">
+      <span class="legend-title">node status</span>
+      <div class="legend-row"><span class="dot s-waiting"></span>waiting</div>
+      <div class="legend-row"><span class="dot s-ready"></span>ready</div>
+      <div class="legend-row"><span class="dot s-running"></span>running</div>
+      <div class="legend-row"><span class="dot s-succeeded"></span>succeeded</div>
+      <div class="legend-row"><span class="dot s-failed"></span>failed</div>
+      <div class="legend-row"><span class="edge-sample"></span>feedback loop</div>
+    </div>
+  </aside>
+
+  <main class="canvas-wrap">
+    <div class="canvas-head">
+      <span id="graphTitle" class="graph-title">select a template to preview its graph</span>
+      <span id="graphMeta" class="graph-meta"></span>
+    </div>
+    <div class="canvas" id="canvas">
+      <svg id="dag" width="100%" preserveAspectRatio="xMidYMid meet"></svg>
+      <div class="canvas-empty" id="canvasEmpty">no graph yet — pick a template or press Run</div>
+    </div>
+  </main>
+
+  <section class="feed-wrap">
+    <div class="feed-head">activity</div>
+    <div class="feed" id="feed"></div>
+  </section>
+
+  <aside class="detail" id="detail" hidden>
+    <div class="detail-head">
+      <span class="detail-title" id="detailTitle">node</span>
+      <button class="detail-close" id="detailClose" aria-label="close">✕</button>
+    </div>
+    <div class="detail-body" id="detailBody"></div>
+  </aside>
+
+</div>
+<script type="module" src="/app.js"></script>
+</body>
+</html>

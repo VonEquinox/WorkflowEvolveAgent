@@ -70,6 +70,8 @@ physical guardrail — trial runs must not cause irreversible external side effe
 cd runner && npm install
 npm test         # offline: Phases 3–5 (retrieval, exact reuse, champion gate)
 npm run smoke    # offline: synthesize a run → both trace surfaces
+npm run gui      # web UI at http://127.0.0.1:7788 — task in, live DAG +
+                 # per-agent progress out; Simulate mode needs no endpoint
 
 # a real run needs an Anthropic-messages endpoint:
 export WEA_BASE_URL=... WEA_API_KEY=... WEA_MODEL=...

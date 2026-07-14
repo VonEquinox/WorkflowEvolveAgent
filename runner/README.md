@@ -14,12 +14,28 @@ cd runner && npm install
 
 npm test        # offline self-test for Phases 3–5 (no network, no API spend)
 npm run smoke   # offline: synthesize a run → emit both trace surfaces
+npm run gui     # web UI at http://127.0.0.1:7788 — see below
 
 # A real run needs an Anthropic-messages endpoint:
 export WEA_BASE_URL=... WEA_API_KEY=... WEA_MODEL=...
 npx tsx src/run.ts --task "node test.js fails: ... fix it" \
   --template auto --repo /path/to/target-repo --out runs
 ```
+
+## GUI
+
+`npm run gui` serves a local web UI (127.0.0.1:7788): type a task, pick a
+template (or `auto`), and watch the run live — the workflow DAG with each node's
+status (waiting / ready / running / succeeded / failed), what every agent is
+doing right now (tool calls, tokens, cost as they happen), a live activity feed,
+and per-node detail (role, division of labor, recent activity, final JSON
+output). FEEDBACK loops render as dashed return edges.
+
+Two modes: **Simulate** (no endpoint, no spend — the real scheduler drives a
+deterministic stub, so parallelism/loops/progress are fully demonstrable
+offline) and **Live** (real pi sessions; enabled automatically when `WEA_*` env
+is set on the server). The GUI and the CLI drive the same orchestrator
+(`src/orchestrator.ts`), so behavior is identical.
 
 `--template auto` (the default) lets **retrieval** pick the workflow from the
 task; pass an explicit id (`--template t2-bugfix`) to override. If a family has a
@@ -45,7 +61,10 @@ src/
                    JSON-output parsing)
   library.ts       load library/templates/*.json + library/agents/*.md
   trace-export.ts  RunManifest → dual trace surface (compliance + PVF projection)
-  run.ts           CLI event loop (parallel spawn, retry, verdict-aware status)
+  orchestrator.ts  the execution loop as an event-emitting function (live + sim);
+                   both the CLI and the GUI drive it
+  run.ts           CLI front over the orchestrator
+  gui-server.ts    local web UI server: static + JSON API + SSE event stream
   rebuild.ts       rebuild traces from a manifest offline
   smoke-export.ts  offline: synthetic manifest → both trace surfaces
 
