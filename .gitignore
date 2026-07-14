@@ -23,3 +23,10 @@ __pycache__/
 
 # stray nested run dir (path-bug guard)
 runner/runner/
+
+# research / design docs — kept local, not published
+research/
+SELF_EVOLVING_AGENT_RESEARCH_PLAN.md
+SELF_EVOLVING_AGENT_RESEARCH_PLAN_v0.2.md
+PI_INTEGRATION_PLAN.md
+spikes/phase0/FINDINGS.md
