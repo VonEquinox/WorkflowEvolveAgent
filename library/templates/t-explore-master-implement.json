@@ -1,0 +1,40 @@
+{
+  "id": "t-explore-master-implement",
+  "version": "1.0.0",
+  "catalog": true,
+  "summary": "Explore (cheap workers) -> WEA master handoff (strong model plans) -> dispatch code-edit graph. Demonstrates proactive control takeover. Tags: parallel explore fanout master handoff.",
+  "graph": {
+    "nodes": [
+      {
+        "id": "explore_a",
+        "kind": "planner",
+        "agentCard": "explorer",
+        "trigger": "ALL_SUCCESS",
+        "promptTemplate": "Task:\n${task}\n\nYou are explorer A (worker model). Independently investigate and propose one approach. Produce the approach JSON. Do NOT implement."
+      },
+      {
+        "id": "explore_b",
+        "kind": "planner",
+        "agentCard": "explorer",
+        "trigger": "ALL_SUCCESS",
+        "promptTemplate": "Task:\n${task}\n\nYou are explorer B (worker model). Independently investigate and propose one approach. Produce the approach JSON. Do NOT implement."
+      },
+      {
+        "id": "wea_master",
+        "kind": "planner",
+        "agentCard": "master-handoff",
+        "controlHandoff": true,
+        "trigger": "ALL_SUCCESS",
+        "promptTemplate": "Proactive master handoff after exploration. Upstream explorers:\n${upstream}"
+      }
+    ],
+    "edges": [
+      { "id": "e_in_a", "from": "@input", "to": "explore_a", "kind": "DATA" },
+      { "id": "e_in_b", "from": "@input", "to": "explore_b", "kind": "DATA" },
+      { "id": "e_a_master", "from": "explore_a", "to": "wea_master", "kind": "DATA" },
+      { "id": "e_b_master", "from": "explore_b", "to": "wea_master", "kind": "DATA" },
+      { "id": "e_master_out", "from": "wea_master", "to": "@output", "kind": "DATA" }
+    ],
+    "loops": []
+  }
+}

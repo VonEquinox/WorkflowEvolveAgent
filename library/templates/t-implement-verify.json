@@ -1,0 +1,33 @@
+{
+  "id": "t-implement-verify",
+  "version": "1.0.0",
+  "catalog": false,
+  "summary": "Code-edit subgraph: Implement -> Verify with bounded fix loop. Intended to run AFTER a WEA master handoff that supplies the plan.",
+  "graph": {
+    "nodes": [
+      {
+        "id": "implement",
+        "kind": "worker",
+        "agentCard": "implementer",
+        "trigger": "ALL_SUCCESS",
+        "promptTemplate": "Task:\n${task}\n\nMaster plan (from WEA control — follow this):\n${master_plan}\n\nUpstream (verifier feedback on fix passes):\n${upstream}\n\nImplement exactly the master plan. If verifier must_fix items appear upstream, address those. Produce the JSON report."
+      },
+      {
+        "id": "verify",
+        "kind": "verifier",
+        "agentCard": "verifier",
+        "trigger": "ALL_SUCCESS",
+        "promptTemplate": "Task:\n${task}\n\nMaster plan:\n${master_plan}\n\nImplementer report:\n${upstream}\n\nIndependently verify against the task and the master plan. Produce the verdict JSON."
+      }
+    ],
+    "edges": [
+      { "id": "e_in_impl", "from": "@input", "to": "implement", "kind": "DATA" },
+      { "id": "e_impl_verify", "from": "implement", "to": "verify", "kind": "DATA" },
+      { "id": "e_verify_out", "from": "verify", "to": "@output", "kind": "DATA" },
+      { "id": "e_fix_loop", "from": "verify", "to": "implement", "kind": "FEEDBACK", "loopId": "fix" }
+    ],
+    "loops": [
+      { "id": "fix", "bodyNodes": ["implement", "verify"], "feedbackEdges": ["e_fix_loop"], "maxIterations": 2 }
+    ]
+  }
+}

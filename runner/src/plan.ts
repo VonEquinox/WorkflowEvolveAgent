@@ -85,6 +85,10 @@ Prefer "use" when a catalog graph already fits.
 Prefer "adapt" for small prompt/topology tweaks (drop redundant node, tighten prompts, add loop).
 Use "cold_start" only when no catalog template is a reasonable base.
 
+Special template: t-explore-master-implement runs cheap explorers then a WEA master
+handoff (strong model plans) then a code-edit subgraph. Prefer it when the task
+benefits from multi-approach exploration before a strong planner takes over.
+
 Agent cards available to nodes (agentCard field MUST be one of these):
   inspector, explorer, aggregator, implementer, verifier
 

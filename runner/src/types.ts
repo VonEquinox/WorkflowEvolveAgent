@@ -69,6 +69,13 @@ export interface GraphNode {
 	 * Field may still appear in historical templates; orchestrator strips it.
 	 */
 	model?: string;
+	/**
+	 * Proactive WEA master takeover point. When true (or agentCard is
+	 * "master-handoff"), the orchestrator does NOT spawn a pi worker: it packs
+	 * upstream context, calls the WEA control model to plan, then dispatches a
+	 * code-edit graph with that plan injected as ${master_plan}.
+	 */
+	controlHandoff?: boolean;
 	/** Per-node budget ceiling; runner aborts the session if exceeded. */
 	budget?: NodeBudget;
 }

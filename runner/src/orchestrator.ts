@@ -21,6 +21,8 @@ import { loadAgentCards, loadTemplate } from "./library.ts";
 import { currentChampion } from "./champion.ts";
 import {
 	detectEscalation,
+	isControlHandoffNode,
+	masterHandoff,
 	masterImprove,
 	masterReplan,
 	mergeUsage,
@@ -65,6 +67,15 @@ export type RunEvent =
 			ok: boolean;
 			why: string;
 			graph?: WorkflowGraph;
+			templateRef?: string;
+	  }
+	| {
+			type: "master_handoff";
+			nodeId: string;
+			ok: boolean;
+			why: string;
+			masterPlan?: string;
+			editGraph?: WorkflowGraph;
 			templateRef?: string;
 	  }
 	| {
@@ -373,10 +384,14 @@ export async function executeRun(opts: ExecuteOptions): Promise<ExecuteResult> {
 		controlModel: control?.modelId,
 	});
 
-	/** Run one sealed graph to completion (or until escalation freezes it). */
+	/** Injected by proactive master handoff into subsequent edit-graph prompts. */
+	let masterPlanContext = "";
+
+	/** Run one sealed graph to completion (or until escalation / handoff freezes it). */
 	async function runGraphOnce(activeGraph: WorkflowGraph): Promise<{
 		scheduler: GraphScheduler;
 		escalation: EscalationSignal | null;
+		handoff: Awaited<ReturnType<typeof masterHandoff>> | null;
 	}> {
 		const scheduler = new GraphScheduler(activeGraph);
 		scheduler.sealAll();
@@ -404,12 +419,13 @@ export async function executeRun(opts: ExecuteOptions): Promise<ExecuteResult> {
 		const retriesUsed = new Map<string, number>();
 		const MAX_NODE_RETRIES = 1;
 		let pendingEscalation: EscalationSignal | null = null;
+		let pendingHandoff: Awaited<ReturnType<typeof masterHandoff>> | null = null;
 
 		while (!scheduler.allTerminal()) {
-			if (pendingEscalation) break;
+			if (pendingEscalation || pendingHandoff) break;
 
 			for (const nodeId of scheduler.readyNodes()) {
-				if (pendingEscalation) break;
+				if (pendingEscalation || pendingHandoff) break;
 				if (inFlight.size >= maxParallel) break;
 				if (inFlight.has(nodeId)) continue;
 				if (ledger.exceeded()) {
@@ -418,14 +434,235 @@ export async function executeRun(opts: ExecuteOptions): Promise<ExecuteResult> {
 					continue;
 				}
 				const node = scheduler.nodes.get(nodeId)!;
-				const card = cards.get(node.agentCard);
-				if (!card) throw new Error(`node ${nodeId} references unknown agent card ${node.agentCard}`);
 				const rt = scheduler.runtime.get(nodeId)!;
 				const attemptNo = scheduler.attemptNo(nodeId);
+
+				// ---- proactive WEA master handoff (no pi worker) --------------------
+				if (isControlHandoffNode(node)) {
+					scheduler.markRunning(nodeId);
+					flushSchedulerEvents();
+					emit({ type: "log", message: `◆ ${nodeId} WEA master handoff (control plane takes over)` });
+
+					// Drain any parallel explorers already in flight before packing context.
+					while (inFlight.size > 0) {
+						const [id2, rec2] = await race(inFlight);
+						inFlight.delete(id2);
+						records.push(rec2);
+						emit({
+							type: "node_result",
+							nodeId: id2,
+							attemptNo: rec2.attemptNo,
+							status: rec2.status,
+							summary: rec2.output?.summary ?? rec2.error?.message ?? "",
+							tokens: rec2.usage.reduce((a, u) => a + u.input + u.output, 0),
+							costMicrounits: rec2.usage.reduce((a, u) => a + u.costMicrounits, 0),
+							toolCalls: rec2.toolCalls.length,
+							output: rec2.output,
+							error: rec2.error ? `${rec2.error.code}: ${rec2.error.message}` : null,
+						});
+						if (rec2.status === "success") scheduler.reportSuccess(id2, rec2.output);
+						else scheduler.reportFailure(id2, rec2.error?.code ?? "UNKNOWN", rec2.error?.message ?? "node failed");
+						flushSchedulerEvents();
+					}
+
+					const upstream = upstreamOutputs(nodeId, activeGraph, records);
+					const startedAt = new Date().toISOString();
+
+					if (opts.mode === "sim" || !control) {
+						// Offline stub: synthesize a trivial plan + default edit graph
+						const planText = JSON.stringify(
+							{
+								summary: `sim master plan from ${upstream.map((u) => u.nodeId).join(", ") || "no upstream"}`,
+								steps: ["apply explorer consensus", "implement", "verify"],
+							},
+							null,
+							2,
+						);
+						const { loadTemplate: lt } = await import("./library.ts");
+						let editGraph: WorkflowGraph;
+						try {
+							editGraph = lt("t-implement-verify").graph;
+						} catch {
+							editGraph = {
+								nodes: [
+									{
+										id: "implement",
+										kind: "worker",
+										agentCard: "implementer",
+										trigger: "ALL_SUCCESS",
+										promptTemplate: "${task}\n${master_plan}\n${upstream}",
+									},
+								],
+								edges: [
+									{ id: "e1", from: "@input", to: "implement", kind: "DATA" },
+									{ id: "e2", from: "implement", to: "@output", kind: "DATA" },
+								],
+								loops: [],
+							};
+						}
+						const out: NodeOutput = {
+							summary: "sim master handoff",
+							master_plan: JSON.parse(planText),
+							handoff: true,
+						};
+						const record: NodeRunRecord = {
+							nodeId,
+							attemptNo,
+							agentCard: "master-handoff",
+							kind: node.kind,
+							sessionId: `handoff-sim-${nodeId}`,
+							systemPromptDigest: "sha256:" + "h".repeat(64),
+							toolCalls: [],
+							toolResults: [],
+							usage: [{ input: 0, output: 0, cachedInput: 0, total: 0, costMicrounits: 0 }],
+							finalText: JSON.stringify(out),
+							output: out,
+							status: "success",
+							error: null,
+							plannedAt: rt.plannedAt,
+							readyAt: rt.readyAt ?? rt.plannedAt,
+							startedAt,
+							endedAt: new Date().toISOString(),
+							readSet: [],
+							writeSet: [],
+							observations: [],
+							usedBash: false,
+							redactions: 0,
+						};
+						records.push(record);
+						emit({
+							type: "node_result",
+							nodeId,
+							attemptNo,
+							status: "success",
+							summary: out.summary,
+							tokens: 0,
+							costMicrounits: 0,
+							toolCalls: 0,
+							output: out,
+							error: null,
+						});
+						scheduler.reportSuccess(nodeId, out);
+						flushSchedulerEvents();
+						pendingHandoff = {
+							ok: true,
+							why: "sim handoff → t-implement-verify",
+							masterPlan: planText,
+							editGraph,
+							baseId: "t-implement-verify",
+							version: "1.0.0",
+							usage: { inputTokens: 0, outputTokens: 0 },
+							output: out,
+						};
+						emit({
+							type: "master_handoff",
+							nodeId,
+							ok: true,
+							why: pendingHandoff.why,
+							masterPlan: planText,
+							editGraph,
+							templateRef: "t-implement-verify",
+						});
+						break;
+					}
+
+					const handoff = await masterHandoff({
+						control,
+						task: opts.task,
+						currentGraph: activeGraph,
+						templateRef,
+						handoffNodeId: nodeId,
+						upstream,
+						allRecords: records,
+						persist: opts.persistPlan !== false,
+						onLog: (message) => emit({ type: "log", message }),
+					});
+					controlUsageAcc = mergeUsage(controlUsageAcc, handoff.usage);
+
+					const out: NodeOutput = handoff.output ?? {
+						summary: handoff.ok ? "master handoff ok" : handoff.why,
+						handoff: true,
+					};
+					const record: NodeRunRecord = {
+						nodeId,
+						attemptNo,
+						agentCard: "master-handoff",
+						kind: node.kind,
+						sessionId: `handoff-${nodeId}-${attemptNo}`,
+						systemPromptDigest: "sha256:" + "c".repeat(64),
+						toolCalls: [],
+						toolResults: [],
+						usage: [
+							{
+								input: handoff.usage.inputTokens,
+								output: handoff.usage.outputTokens,
+								cachedInput: 0,
+								total: handoff.usage.inputTokens + handoff.usage.outputTokens,
+								costMicrounits: 0,
+							},
+						],
+						finalText: JSON.stringify(out),
+						output: out,
+						status: handoff.ok ? "success" : "failure",
+						error: handoff.ok
+							? null
+							: { code: "HANDOFF_FAILED", message: handoff.why, retryable: false },
+						plannedAt: rt.plannedAt,
+						readyAt: rt.readyAt ?? rt.plannedAt,
+						startedAt,
+						endedAt: new Date().toISOString(),
+						readSet: [],
+						writeSet: [],
+						observations: [],
+						usedBash: false,
+						redactions: 0,
+					};
+					records.push(record);
+					emit({
+						type: "node_result",
+						nodeId,
+						attemptNo,
+						status: record.status,
+						summary: out.summary ?? handoff.why,
+						tokens: handoff.usage.inputTokens + handoff.usage.outputTokens,
+						costMicrounits: 0,
+						toolCalls: 0,
+						output: out,
+						error: record.error ? `${record.error.code}: ${record.error.message}` : null,
+					});
+					emit({
+						type: "master_handoff",
+						nodeId,
+						ok: handoff.ok,
+						why: handoff.why,
+						masterPlan: handoff.masterPlan,
+						editGraph: handoff.editGraph,
+						templateRef: handoff.baseId,
+					});
+
+					if (handoff.ok && handoff.editGraph) {
+						scheduler.reportSuccess(nodeId, out);
+						flushSchedulerEvents();
+						pendingHandoff = handoff;
+					} else {
+						scheduler.reportFailure(nodeId, "HANDOFF_FAILED", handoff.why);
+						flushSchedulerEvents();
+					}
+					break;
+				}
+
+				// ---- normal pi worker node ------------------------------------------
+				const card = cards.get(node.agentCard);
+				if (!card) throw new Error(`node ${nodeId} references unknown agent card ${node.agentCard}`);
 				scheduler.markRunning(nodeId);
 				flushSchedulerEvents();
 				const onActivity = (a: RecorderActivity) => emit({ type: "node_activity", nodeId, attemptNo, activity: a });
-				const taskPrompt = renderPrompt(node.promptTemplate, opts.task, upstreamOutputs(nodeId, activeGraph, records));
+				const taskPrompt = renderPrompt(
+					node.promptTemplate,
+					opts.task,
+					upstreamOutputs(nodeId, activeGraph, records),
+					masterPlanContext,
+				);
 				emit({ type: "log", message: `▶ ${nodeId} (attempt ${attemptNo}) card=${card.name}` });
 
 				const promise =
@@ -457,7 +694,7 @@ export async function executeRun(opts: ExecuteOptions): Promise<ExecuteResult> {
 			}
 
 			if (inFlight.size === 0) {
-				if (pendingEscalation) break;
+				if (pendingEscalation || pendingHandoff) break;
 				if (scheduler.stalled()) {
 					emit({ type: "log", message: "scheduler stalled with no runnable nodes; stopping" });
 					break;
@@ -540,15 +777,61 @@ export async function executeRun(opts: ExecuteOptions): Promise<ExecuteResult> {
 			flushSchedulerEvents();
 		}
 
-		return { scheduler, escalation: pendingEscalation };
+		return { scheduler, escalation: pendingEscalation, handoff: pendingHandoff };
 	}
 
-	// ---- outer master loop: graph run → (optional) escalate replan → re-run ----
+	// ---- outer master loop:
+	//   graph run → proactive handoff (edit graph) | escalate replan → re-run ----
 	let scheduler = new GraphScheduler(graph); // placeholder until first run
 	for (;;) {
 		const once = await runGraphOnce(graph);
 		scheduler = once.scheduler;
 
+		// (A) Proactive handoff: explorers done → WEA planned → dispatch edit graph
+		if (once.handoff?.ok && once.handoff.editGraph) {
+			masterPlanContext = once.handoff.masterPlan ?? "";
+			graph = once.handoff.editGraph;
+			for (const n of graph.nodes) delete n.model;
+			templateRef = once.handoff.baseId ?? `${templateRef}+edit`;
+			templateVersion = once.handoff.version ?? templateVersion;
+			cards = loadAgentCards();
+			for (const n of graph.nodes) {
+				if (isControlHandoffNode(n)) {
+					// never nest handoff inside edit phase
+					n.controlHandoff = false;
+					n.agentCard = "implementer";
+				}
+				if (!cards.has(n.agentCard) && !isControlHandoffNode(n)) {
+					throw new Error(`edit graph node ${n.id} needs missing card ${n.agentCard}`);
+				}
+			}
+			emit({
+				type: "template_resolved",
+				templateRef,
+				why: once.handoff.why,
+				planMode: "master_handoff",
+			});
+			emit({
+				type: "log",
+				message: `master handoff → edit graph ${templateRef} (${graph.nodes.length} nodes); master_plan injected`,
+			});
+			emit({
+				type: "run_started",
+				runId,
+				task: opts.task,
+				templateRef,
+				templateVersion,
+				mode: opts.mode,
+				graph,
+				cards: cardsPayload(),
+				workerModel: workerModelLabel,
+				controlModel: control?.modelId,
+			});
+			// Continue outer loop to execute the edit graph (no second handoff expected).
+			continue;
+		}
+
+		// (B) Reactive escalate replan
 		if (!once.escalation || !control || !enableReplan || replanCount >= maxReplans) {
 			break;
 		}
@@ -585,7 +868,7 @@ export async function executeRun(opts: ExecuteOptions): Promise<ExecuteResult> {
 		templateVersion = replan.version ?? templateVersion;
 		cards = loadAgentCards();
 		for (const n of graph.nodes) {
-			if (!cards.has(n.agentCard)) {
+			if (!cards.has(n.agentCard) && !isControlHandoffNode(n)) {
 				throw new Error(`replan graph node ${n.id} needs missing card ${n.agentCard}`);
 			}
 		}
@@ -596,7 +879,6 @@ export async function executeRun(opts: ExecuteOptions): Promise<ExecuteResult> {
 			planMode: "master_replan",
 		});
 		emit({ type: "log", message: `master replan graph ready: ${templateRef} (${graph.nodes.length} nodes) — re-running` });
-		// Fresh run_started so GUI can re-init DAG on the new graph.
 		emit({
 			type: "run_started",
 			runId,
@@ -745,13 +1027,19 @@ export function upstreamOutputs(nodeId: string, graph: WorkflowGraph, records: N
 	return picked;
 }
 
-export function renderPrompt(template: string, task: string, upstream: NodeRunRecord[]): string {
+export function renderPrompt(
+	template: string,
+	task: string,
+	upstream: NodeRunRecord[],
+	masterPlan = "",
+): string {
 	const upstreamText = upstream
 		.map((r) => `### From ${r.nodeId}:\n${JSON.stringify(r.output, null, 2)}`)
 		.join("\n\n");
 	return template
 		.replaceAll("${task}", task)
-		.replaceAll("${upstream}", upstreamText || "(no upstream output yet)");
+		.replaceAll("${upstream}", upstreamText || "(no upstream output yet)")
+		.replaceAll("${master_plan}", masterPlan || "(no master plan — follow task + upstream)");
 }
 
 async function race(inFlight: Map<string, Promise<NodeRunRecord>>): Promise<[string, NodeRunRecord]> {

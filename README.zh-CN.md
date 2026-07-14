@@ -30,6 +30,15 @@ WEA 把「一次 coding agent 调用」变成一张**可版本化的工作流图
    WEA 冻结当前图，汇总任务 + 全部节点尝试 + 原因，交给控制模型 **重画一张图** 再跑（默认最多 2 次）。
 2. **跑完后流程优化** — 任务结束后，控制模型审查 *过程*（不只是代码），
    可写出版本化 challenger：`library/templates/<id>@<ver>.json`。
+3. **主动主控接管（handoff）** — 图上节点可设 `controlHandoff: true`
+   （card `master-handoff`），作为故意的接管点。示例模板
+   `t-explore-master-implement`：
+   ```
+   explore_a / explore_b  （便宜 pi 工人探索）
+        → wea_master        （WEA 强模型：写 master_plan + 造改码图）
+        → implement→verify  （pi 工人，注入 ${master_plan}）
+   ```
+   worker 仍可 *被动* escalate；handoff 是图上 *主动* 用强模型的设计。
 
 > **运行时：** pi SDK · Node ≥ 20 · TypeScript  
 > **控制端点：** Anthropic Messages 兼容 API（`WEA_*`）  

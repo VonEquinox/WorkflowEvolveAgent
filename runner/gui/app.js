@@ -205,10 +205,17 @@ function handleEvent(e) {
 		case "master_replan":
 			feed("master", `replan ${e.ok ? "ok" : "fail"}: ${e.why}`, e.ok ? "ok" : "err");
 			if (e.ok && e.graph) {
-				// re-init DAG for the replacement graph
 				initGraph(e.graph, {});
 				renderDag();
 				$("graphTitle").textContent = `${e.templateRef || "replan"} · master replan`;
+			}
+			break;
+		case "master_handoff":
+			feed(e.nodeId, `◆ WEA handoff ${e.ok ? "ok" : "fail"}: ${e.why}`, e.ok ? "ok" : "err");
+			if (e.ok && e.editGraph) {
+				initGraph(e.editGraph, {});
+				renderDag();
+				$("graphTitle").textContent = `${e.templateRef || "edit"} · after master handoff`;
 			}
 			break;
 		case "master_improve":

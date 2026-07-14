@@ -53,13 +53,21 @@ const FAMILY_ROUTE: Record<string, string> = {
 const RULE_BONUS = 10; // additive; dominates BM25 so a matched family wins ties.
 const FALLBACK_ID = "t1-safe-generic";
 
+export type CatalogTemplate = RunnerTemplate & {
+	/** false → stage/subgraph only (e.g. post-handoff edit graph); skip offline retrieve. */
+	catalog?: boolean;
+};
+
 /** Load only base templates (skip auto-edited `id@version.json` challengers). */
 export function loadTemplateCatalog(dir = TEMPLATES_DIR): RunnerTemplate[] {
 	const out: RunnerTemplate[] = [];
 	for (const file of readdirSync(dir)) {
 		if (!file.endsWith(".json")) continue;
 		if (file.includes("@")) continue; // challengers are not catalog entries
-		out.push(JSON.parse(readFileSync(join(dir, file), "utf8")) as RunnerTemplate);
+		const tpl = JSON.parse(readFileSync(join(dir, file), "utf8")) as CatalogTemplate;
+		// Stage subgraphs (catalog:false) are loadable by id but not offline-ranked.
+		if (tpl.catalog === false) continue;
+		out.push(tpl);
 	}
 	return out;
 }
@@ -68,11 +76,14 @@ export function loadTemplateCatalog(dir = TEMPLATES_DIR): RunnerTemplate[] {
 export function templateDocument(tpl: RunnerTemplate): string {
 	const kinds = tpl.graph.nodes.map((n) => n.kind);
 	const tags: string[] = [];
-	if (kinds.filter((k) => k === "planner").length >= 2) tags.push("parallel", "explore", "fanout");
-	if (kinds.includes("aggregator")) tags.push("aggregate", "merge", "fanin");
+	if (kinds.filter((k) => k === "planner").length >= 2) tags.push("parallel", "explore", "fanout", "exploration");
+	if (kinds.includes("aggregator")) tags.push("aggregate", "merge", "merging", "fanin");
 	if (kinds.includes("verifier")) tags.push("verify", "test", "review");
 	if (tpl.graph.loops.length > 0) tags.push("loop", "retry", "fix");
 	if (tpl.graph.nodes.length <= 3) tags.push("simple", "small", "direct");
+	if (tpl.graph.nodes.some((n) => (n as { controlHandoff?: boolean }).controlHandoff || n.agentCard === "master-handoff")) {
+		tags.push("master", "handoff", "control");
+	}
 	return `${tpl.id} ${tpl.summary} ${tags.join(" ")}`.toLowerCase();
 }
 

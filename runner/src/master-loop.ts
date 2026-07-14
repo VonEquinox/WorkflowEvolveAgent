@@ -403,3 +403,279 @@ export function mergeUsage(a: ControlUsage, b: ControlUsage): ControlUsage {
 		outputTokens: a.outputTokens + b.outputTokens,
 	};
 }
+
+/** True if this graph node is a proactive WEA master takeover point. */
+export function isControlHandoffNode(node: { agentCard: string; controlHandoff?: boolean }): boolean {
+	if (node.controlHandoff === true) return true;
+	const card = node.agentCard.toLowerCase();
+	return card === "master-handoff" || card === "wea-master" || card === "master";
+}
+
+export interface MasterHandoffResult {
+	ok: boolean;
+	why: string;
+	/** Authoritative plan for worker implementers (${master_plan}). */
+	masterPlan?: string;
+	/** Code-edit subgraph to run after the handoff. */
+	editGraph?: WorkflowGraph;
+	baseId?: string;
+	version?: string;
+	writtenPath?: string;
+	usage: ControlUsage;
+	decision?: Record<string, unknown>;
+	/** Synthetic node output recorded for the handoff node. */
+	output?: NodeOutput;
+}
+
+const HANDOFF_SYSTEM = [
+	"You are the WEA MASTER control agent at a PROACTIVE HANDOFF point in a workflow graph.",
+	"",
+	"Cheap worker models (explorers / inspectors) already ran. Their findings are in",
+	"the context. YOU are the strong model. You now:",
+	"",
+	"1. Synthesize a precise MASTER IMPLEMENTATION PLAN from the upstream findings",
+	"2. Choose (or invent) a CODE-EDIT subgraph that worker coding agents will run",
+	"   with your plan injected as context",
+	"",
+	"You do NOT edit the repository yourself. Workers will.",
+	"",
+	"Prefer the standard implement→verify shape unless the task needs something else:",
+	"  implement (implementer) → verify (verifier) + optional FEEDBACK fix loop",
+	"",
+	"OUTPUT: exactly one JSON object, no markdown:",
+	"",
+	"{",
+	'  "decision": "handoff",',
+	'  "master_plan": {',
+	'    "summary": "<one sentence>",',
+	'    "approach": "<how to implement>",',
+	'    "change_surface": ["path or path:symbol", ...],',
+	'    "steps": ["<ordered step>", ...],',
+	'    "acceptance": ["<how to know it worked>", ...],',
+	'    "risks": ["..."],',
+	'    "rejected_upstream": [{"from": "<explorer>", "reason": "..."}]',
+	"  },",
+	'  "edit_graph": {',
+	'    "id": "edit-<short-slug>",',
+	'    "version": "1.0.0",',
+	'    "summary": "<one line>",',
+	'    "graph": {',
+	'      "nodes": [',
+	"        {",
+	'          "id": "implement",',
+	'          "kind": "worker",',
+	'          "agentCard": "implementer",',
+	'          "trigger": "ALL_SUCCESS",',
+	'          "promptTemplate": "Task:\\n${task}\\n\\nMaster plan:\\n${master_plan}\\n\\nUpstream:\\n${upstream}\\n\\nImplement the master plan. Produce JSON report."',
+	"        },",
+	"        {",
+	'          "id": "verify",',
+	'          "kind": "verifier",',
+	'          "agentCard": "verifier",',
+	'          "trigger": "ALL_SUCCESS",',
+	'          "promptTemplate": "Task:\\n${task}\\n\\nMaster plan:\\n${master_plan}\\n\\nImplementer:\\n${upstream}\\n\\nVerify. Produce verdict JSON."',
+	"        }",
+	"      ],",
+	'      "edges": [',
+	'        { "id": "e_in", "from": "@input", "to": "implement", "kind": "DATA" },',
+	'        { "id": "e_iv", "from": "implement", "to": "verify", "kind": "DATA" },',
+	'        { "id": "e_out", "from": "verify", "to": "@output", "kind": "DATA" },',
+	'        { "id": "e_fix", "from": "verify", "to": "implement", "kind": "FEEDBACK", "loopId": "fix" }',
+	"      ],",
+	'      "loops": [',
+	'        { "id": "fix", "bodyNodes": ["implement", "verify"], "feedbackEdges": ["e_fix"], "maxIterations": 2 }',
+	"      ]",
+	"    }",
+	"  },",
+	'  "reasoning": "<why this plan and this edit graph>"',
+	"}",
+	"",
+	"Rules:",
+	"  - master_plan must be concrete enough that a weaker coding model can execute it",
+	"  - every edit_graph node needs ≥1 non-FEEDBACK incoming edge",
+	"  - @input reaches @output; no cycles outside FEEDBACK",
+	"  - agent cards: inspector, explorer, aggregator, implementer, verifier only",
+	"    (do NOT put master-handoff inside the edit graph)",
+	"  - omit per-node model fields",
+	"  - prefer 2–4 nodes in the edit graph",
+].join("\n");
+
+/**
+ * Proactive handoff: strong WEA model consumes explorer/upstream context,
+ * writes a master plan, and returns a code-edit graph for workers.
+ */
+export async function masterHandoff(opts: {
+	control: WeaControlConfig;
+	task: string;
+	currentGraph: WorkflowGraph;
+	templateRef: string;
+	handoffNodeId: string;
+	upstream: NodeRunRecord[];
+	allRecords: NodeRunRecord[];
+	persist?: boolean;
+	onLog?: (m: string) => void;
+}): Promise<MasterHandoffResult> {
+	const log = opts.onLog ?? (() => {});
+	const upstreamBrief = opts.upstream.map((r) => ({
+		nodeId: r.nodeId,
+		status: r.status,
+		output: r.output,
+	}));
+	const priorBrief = opts.allRecords.map((r) => ({
+		nodeId: r.nodeId,
+		attemptNo: r.attemptNo,
+		status: r.status,
+		summary: r.output?.summary ?? r.error?.message ?? null,
+	}));
+
+	const user = [
+		"## Original task",
+		opts.task,
+		"",
+		"## Template / phase that reached the handoff",
+		opts.templateRef,
+		`handoff node: ${opts.handoffNodeId}`,
+		"",
+		"## Current graph (explore phase)",
+		JSON.stringify(opts.currentGraph, null, 2),
+		"",
+		"## Direct upstream into the handoff (explorers etc.)",
+		JSON.stringify(upstreamBrief, null, 2),
+		"",
+		"## All node attempts so far",
+		JSON.stringify(priorBrief, null, 2),
+		"",
+		"You are taking over. Emit master_plan + edit_graph JSON now.",
+	].join("\n");
+
+	log(`[master] proactive handoff at ${opts.handoffNodeId} via ${opts.control.modelId}`);
+	const completion = await controlComplete(opts.control, {
+		system: HANDOFF_SYSTEM,
+		user,
+		maxTokens: 4096,
+		temperature: 0.25,
+	});
+	const usage = completion.usage;
+	const decision = parseJsonObject(completion.text);
+	if (!decision) {
+		return { ok: false, why: "master handoff returned unparseable JSON", usage };
+	}
+
+	const planObj = decision.master_plan ?? decision.plan;
+	if (!planObj) {
+		return { ok: false, why: "master handoff missing master_plan", usage, decision };
+	}
+	const masterPlan =
+		typeof planObj === "string" ? planObj : JSON.stringify(planObj, null, 2);
+
+	// edit_graph may be { id, version, summary, graph } or raw graph
+	let editGraph: WorkflowGraph | undefined;
+	let baseId = "edit-from-handoff";
+	let version = "1.0.0";
+	let summary = "Code-edit graph from master handoff";
+	const eg = decision.edit_graph as any;
+	if (eg?.graph?.nodes) {
+		editGraph = eg.graph as WorkflowGraph;
+		baseId = String(eg.id ?? baseId).replace(/[^a-zA-Z0-9._-]+/g, "-").toLowerCase();
+		version = String(eg.version ?? version);
+		summary = String(eg.summary ?? summary);
+	} else if (eg?.nodes) {
+		editGraph = eg as WorkflowGraph;
+	} else if ((decision as any).graph?.nodes) {
+		editGraph = (decision as any).graph as WorkflowGraph;
+	}
+
+	if (!editGraph) {
+		// Fallback: standard implement→verify with master_plan placeholders
+		editGraph = defaultImplementVerifyGraph();
+		baseId = "t-implement-verify";
+		log("[master] handoff used default t-implement-verify edit graph");
+	}
+	if (!Array.isArray(editGraph.loops)) editGraph.loops = [];
+	for (const n of editGraph.nodes) {
+		delete (n as any).model;
+		delete (n as any).controlHandoff;
+		// Never nest another handoff inside the edit phase
+		if (isControlHandoffNode(n)) {
+			n.agentCard = "implementer";
+			n.kind = "worker";
+		}
+	}
+
+	const issues = structuralIssuesOfGraph(editGraph);
+	if (issues.length) {
+		return {
+			ok: false,
+			why: `master handoff edit graph not runnable: ${issues.join("; ")}`,
+			masterPlan,
+			usage,
+			decision,
+		};
+	}
+
+	let writtenPath: string | undefined;
+	if (opts.persist !== false) {
+		const doc: RunnerTemplateDoc = { id: baseId, version, summary, graph: editGraph };
+		writtenPath = join(TEMPLATES_DIR, `${baseId}@${version}.json`);
+		mkdirSync(dirname(writtenPath), { recursive: true });
+		writeFileSync(writtenPath, JSON.stringify(doc, null, 2) + "\n");
+		log(`[master] wrote edit graph ${writtenPath}`);
+	}
+
+	const output: NodeOutput = {
+		summary:
+			typeof planObj === "object" && planObj && "summary" in (planObj as object)
+				? String((planObj as any).summary)
+				: `master plan for edit graph ${baseId}`,
+		master_plan: planObj,
+		edit_graph_id: baseId,
+		edit_graph_version: version,
+		reasoning: decision.reasoning ?? null,
+		handoff: true,
+	};
+
+	return {
+		ok: true,
+		why: `master:handoff → plan + ${baseId} — ${String(decision.reasoning ?? "").slice(0, 160)}`,
+		masterPlan,
+		editGraph,
+		baseId,
+		version,
+		writtenPath,
+		usage,
+		decision,
+		output,
+	};
+}
+
+function defaultImplementVerifyGraph(): WorkflowGraph {
+	return {
+		nodes: [
+			{
+				id: "implement",
+				kind: "worker",
+				agentCard: "implementer",
+				trigger: "ALL_SUCCESS",
+				promptTemplate:
+					"Task:\n${task}\n\nMaster plan (from WEA control — follow this):\n${master_plan}\n\nUpstream (verifier feedback on fix passes):\n${upstream}\n\nImplement exactly the master plan. Produce the JSON report.",
+			},
+			{
+				id: "verify",
+				kind: "verifier",
+				agentCard: "verifier",
+				trigger: "ALL_SUCCESS",
+				promptTemplate:
+					"Task:\n${task}\n\nMaster plan:\n${master_plan}\n\nImplementer report:\n${upstream}\n\nIndependently verify. Produce the verdict JSON.",
+			},
+		],
+		edges: [
+			{ id: "e_in_impl", from: "@input", to: "implement", kind: "DATA" },
+			{ id: "e_impl_verify", from: "implement", to: "verify", kind: "DATA" },
+			{ id: "e_verify_out", from: "verify", to: "@output", kind: "DATA" },
+			{ id: "e_fix_loop", from: "verify", to: "implement", kind: "FEEDBACK", loopId: "fix" },
+		],
+		loops: [
+			{ id: "fix", bodyNodes: ["implement", "verify"], feedbackEdges: ["e_fix_loop"], maxIterations: 2 },
+		],
+	};
+}

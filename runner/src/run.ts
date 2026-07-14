@@ -77,6 +77,10 @@ function onEvent(e: RunEvent): void {
 		case "master_replan":
 			log(`[master-replan] ${e.ok ? "ok" : "fail"} ${e.why}`);
 			break;
+		case "master_handoff":
+			log(`[master-handoff] ${e.ok ? "ok" : "fail"} @ ${e.nodeId}: ${e.why}`);
+			if (e.masterPlan) log(`[master-plan]\n${e.masterPlan.slice(0, 500)}${e.masterPlan.length > 500 ? "…" : ""}`);
+			break;
 		case "master_improve":
 			log(`[master-improve] ${e.ok ? "ok" : "fail"} applied=${e.applied} ${e.why}`);
 			break;

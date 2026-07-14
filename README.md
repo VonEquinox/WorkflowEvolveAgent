@@ -36,6 +36,16 @@ or `--offline-plan` — it is **not** the live router.
 2. **Post-run improve** — after the task ends, the control model reviews the
    *process* (not just the code) and may write a versioned challenger template
    under `library/templates/<id>@<ver>.json`.
+3. **Proactive master handoff** — a graph node with `controlHandoff: true`
+   (card `master-handoff`) is an intentional takeover point. Example template
+   `t-explore-master-implement`:
+   ```
+   explore_a / explore_b  (cheap pi workers)
+        → wea_master        (WEA strong model: plan + invent edit graph)
+        → implement→verify  (pi workers, with ${master_plan} injected)
+   ```
+   Workers may still *reactively* escalate; handoff is the *planned* use of the
+   strong model mid-graph.
 
 > **Runtime:** pi SDK · Node ≥ 20 · TypeScript  
 > **Control endpoint:** any Anthropic-messages-compatible API (`WEA_*`)  
