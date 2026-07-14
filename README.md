@@ -7,8 +7,26 @@ WEA turns a one-shot coding agent call into a **versioned workflow graph** you c
 schedule, trace, attribute, retrieve, cache, redesign, and promote — only when a
 challenger **wins a paired comparison** against the current champion.
 
+### Model split (important)
+
+| Plane | Env / config | Role |
+|-------|----------------|------|
+| **WEA control** | `WEA_BASE_URL` / `WEA_API_KEY` / `WEA_MODEL` | Plan: retrieve best graph → **adapt** or **cold-start** → (later) meta-improve |
+| **pi workers** | `~/.pi/agent` default provider/model | Every graph node (`inspect` / `implement` / `verify` / …) |
+
+Default live path for `--template auto`:
+
+```
+task → retrieval (BM25+rules)
+     → WEA control LLM: use | adapt | cold_start
+     → structural gate
+     → schedule graph
+     → each node = pi AgentSession on **default pi model**
+```
+
 > **Runtime:** pi SDK · Node ≥ 20 · TypeScript  
-> **Endpoint:** any Anthropic-messages-compatible API  
+> **Control endpoint:** any Anthropic-messages-compatible API (`WEA_*`)  
+> **Worker model:** interactive pi defaults (e.g. `kuaipao/grok-4.5`)  
 > **中文说明:** [README.zh-CN.md](./README.zh-CN.md)  
 > **Install:** [`./install.sh`](./install.sh)
 

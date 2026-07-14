@@ -4,9 +4,27 @@
 
 WEA 把「一次 coding agent 调用」变成一张**可版本化的工作流图**：可调度、可 trace、可归因、可检索、可缓存、可改设计，并且**只有在配对实测中打赢当前冠军**时才会晋升为默认流程。
 
+### 双模型拆分（关键）
+
+| 平面 | 配置 | 职责 |
+|------|------|------|
+| **WEA 控制面** | `WEA_BASE_URL` / `WEA_API_KEY` / `WEA_MODEL` | 选图、改图（adapt）、冷启动新图、meta 进化 |
+| **pi 工作面** | `~/.pi/agent` 默认 provider/model | 图上每个节点（inspect / implement / verify …） |
+
+默认 live（`--template auto`）流程：
+
+```
+任务 → 检索（BM25 + 规则）
+     → WEA 控制模型：use | adapt | cold_start
+     → 结构门
+     → 调度图
+     → 每个节点 = pi AgentSession（**用户默认 pi 模型**）
+```
+
 > **运行时：** pi SDK · Node ≥ 20 · TypeScript  
-> **端点：** 任意 Anthropic Messages 兼容 API  
-> **English:** [README.md](./README.md)（含完整公式与算法专章）  
+> **控制端点：** Anthropic Messages 兼容 API（`WEA_*`）  
+> **工作模型：** 交互式 pi 默认（例如 `kuaipao/grok-4.5`）  
+> **English:** [README.md](./README.md)  
 > **安装：** [`./install.sh`](./install.sh)
 
 ---

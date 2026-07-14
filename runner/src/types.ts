@@ -64,7 +64,10 @@ export interface GraphNode {
 	trigger: TriggerRule;
 	/** Task prompt template; ${artifact.<nodeId>} refs are resolved at spawn time. */
 	promptTemplate: string;
-	/** Per-node model override (WEA endpoint model id). Omitted = run-level model. */
+	/**
+	 * Deprecated for workers: live runs always use the user's default pi model.
+	 * Field may still appear in historical templates; orchestrator strips it.
+	 */
 	model?: string;
 	/** Per-node budget ceiling; runner aborts the session if exceeded. */
 	budget?: NodeBudget;

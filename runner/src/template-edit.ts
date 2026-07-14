@@ -64,6 +64,11 @@ export interface GateResult {
 
 // ---- structural executability (the ONLY thing the gate enforces) ------------
 
+/** Public structural check (used by pre-run cold-start planner too). */
+export function structuralIssuesOfGraph(graph: WorkflowGraph): string[] {
+	return structuralIssues(graph);
+}
+
 function structuralIssues(graph: WorkflowGraph): string[] {
 	const issues: string[] = [];
 	const ids = new Set(graph.nodes.map((n) => n.id));

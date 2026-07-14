@@ -11,8 +11,9 @@
  *   GET  /api/run/:id             → snapshot { events } (refresh safety)
  *
  * Binds 127.0.0.1 only. Sim mode works with no endpoint configured — the GUI is
- * fully demonstrable offline; live mode appears automatically when WEA_* env is
- * set.
+ * fully demonstrable offline. Live mode needs a working default pi model for
+ * workers; WEA_* enables control-plane plan/adapt/cold-start (optional — without
+ * it live still runs via offline retrieval + pi default model).
  *
  * Run:  npm run gui   →  http://127.0.0.1:7788
  */
@@ -24,6 +25,7 @@ import { fileURLToPath } from "node:url";
 import { executeRun, resolveTemplateRef, type RunEvent, type RunMode } from "./orchestrator.ts";
 import { loadTemplate } from "./library.ts";
 import { loadTemplateCatalog } from "./retrieval.ts";
+import { loadWeaControlConfig } from "./wea-control.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const GUI_DIR = join(HERE, "..", "gui");
@@ -38,11 +40,20 @@ const MIME: Record<string, string> = {
 	".json": "application/json",
 };
 
-function env(): { baseUrl: string; apiKey: string; modelId: string } | null {
-	const { WEA_BASE_URL, WEA_API_KEY, WEA_MODEL } = process.env;
-	return WEA_BASE_URL && WEA_API_KEY && WEA_MODEL
-		? { baseUrl: WEA_BASE_URL, apiKey: WEA_API_KEY, modelId: WEA_MODEL }
-		: null;
+/** WEA control-plane config (plan/adapt/cold-start). Workers use pi default. */
+function controlEnv() {
+	return loadWeaControlConfig();
+}
+
+/** Live workers need a default pi model; we probe by attempting factory later. */
+function liveHint(): { controlAvailable: boolean; note: string } {
+	const c = controlEnv();
+	return {
+		controlAvailable: c !== null,
+		note: c
+			? `control=${c.modelId}; workers=pi default model`
+			: "control offline (retrieval only); workers=pi default model",
+	};
 }
 
 // ---- run registry -------------------------------------------------------------
@@ -98,7 +109,13 @@ const server = createServer(async (req, res) => {
 	const path = url.pathname;
 	try {
 		if (req.method === "GET" && path === "/api/health") {
-			return json(res, 200, { liveAvailable: env() !== null, port: PORT });
+			const hint = liveHint();
+			return json(res, 200, {
+				liveAvailable: true, // workers use pi default; always "available" if pi is configured
+				controlAvailable: hint.controlAvailable,
+				note: hint.note,
+				port: PORT,
+			});
 		}
 
 		if (req.method === "GET" && path === "/api/templates") {
@@ -121,18 +138,18 @@ const server = createServer(async (req, res) => {
 			const task = (body.task ?? "").trim();
 			if (!task) return json(res, 400, { error: "task is required" });
 			const mode: RunMode = body.mode === "live" ? "live" : "sim";
-			const e = env();
-			if (mode === "live" && !e) return json(res, 400, { error: "live mode needs WEA_BASE_URL / WEA_API_KEY / WEA_MODEL" });
+			const control = controlEnv();
 			const templateRef = body.template?.trim() || "auto";
 			const repo = body.repo?.trim() || process.cwd();
 
-			// Resolve + load early so a bad template/cards 400s with a real message
-			// before a run id exists.
-			try {
-				const resolved = resolveTemplateRef({ task, templateRef });
-				loadTemplate(resolved.ref);
-			} catch (err) {
-				return json(res, 400, { error: String((err as Error).message) });
+			// Early validation for explicit templates only (auto plans at run start).
+			if (templateRef !== "auto") {
+				try {
+					const resolved = resolveTemplateRef({ task, templateRef });
+					loadTemplate(resolved.ref);
+				} catch (err) {
+					return json(res, 400, { error: String((err as Error).message) });
+				}
 			}
 
 			const state: RunState = { events: [], listeners: new Set(), done: false };
@@ -144,7 +161,7 @@ const server = createServer(async (req, res) => {
 					repo,
 					out: mode === "live" ? join(HERE, "..", "runs") : undefined,
 					mode,
-					env: e ?? undefined,
+					control,
 					onEvent: (event) => {
 						if (event.type === "run_started") {
 							runId = event.runId;
@@ -195,5 +212,7 @@ const server = createServer(async (req, res) => {
 });
 
 server.listen(PORT, HOST, () => {
-	console.log(`wea gui →  http://${HOST}:${PORT}   (live mode: ${env() ? "available" : "off — set WEA_* env"})`);
+	const hint = liveHint();
+	console.log(`wea gui →  http://${HOST}:${PORT}`);
+	console.log(`  ${hint.note}`);
 });

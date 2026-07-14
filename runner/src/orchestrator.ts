@@ -5,8 +5,8 @@
  *   - the GUI server (gui-server.ts) forwards events to the browser over SSE.
  *
  * Two modes:
- *   - "live": real pi AgentSessions against the WEA endpoint (identical
- *     semantics to the original run.ts loop, traces written at the end);
+ *   - "live": WEA control plane (WEA_*) plans/adapts the graph; worker nodes
+ *     run as pi AgentSessions on the user's **default pi model**;
  *   - "sim":  the SAME GraphScheduler drives the SAME event pipeline, but node
  *     execution is a deterministic no-network stub — so the GUI (and tests) can
  *     exercise scheduling, parallelism, activities and progress with zero spend.
@@ -17,19 +17,32 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { BudgetLedger } from "./budget.ts";
 import { GraphScheduler } from "./graph.ts";
-import { loadTemplate } from "./library.ts";
+import { loadAgentCards, loadTemplate } from "./library.ts";
 import { currentChampion } from "./champion.ts";
-import { runNode, SessionFactory, type AgentCard } from "./node-session.ts";
+import { runNode, PiWorkerFactory, type AgentCard } from "./node-session.ts";
+import { planWorkflow, type PlanResult } from "./plan.ts";
 import type { RecorderActivity } from "./recorder-ext.ts";
 import { retrieve, type TaskCard } from "./retrieval.ts";
 import { buildComplianceTrace, buildPvfTrace, newTraceId, type RunManifest } from "./trace-export.ts";
 import type { NodeOutput, NodeRunRecord, RunBudget, WorkflowGraph } from "./types.ts";
+import { loadWeaControlConfig, type WeaControlConfig } from "./wea-control.ts";
 
 // ---- events -------------------------------------------------------------------
 
 export type RunEvent =
-	| { type: "template_resolved"; templateRef: string; why: string }
-	| { type: "run_started"; runId: string; task: string; templateRef: string; templateVersion: string; mode: RunMode; graph: WorkflowGraph; cards: Record<string, { name: string; description: string; tools: string[] }> }
+	| { type: "template_resolved"; templateRef: string; why: string; planMode?: string }
+	| {
+			type: "run_started";
+			runId: string;
+			task: string;
+			templateRef: string;
+			templateVersion: string;
+			mode: RunMode;
+			graph: WorkflowGraph;
+			cards: Record<string, { name: string; description: string; tools: string[] }>;
+			workerModel?: string;
+			controlModel?: string;
+	  }
 	| { type: "node_state"; nodeId: string; state: string; attemptNo: number; detail?: string }
 	| { type: "loop"; loopId: string; iteration: number; exhausted: boolean }
 	| { type: "node_activity"; nodeId: string; attemptNo: number; activity: RecorderActivity }
@@ -42,7 +55,7 @@ export type RunMode = "live" | "sim";
 
 export interface ExecuteOptions {
 	task: string;
-	/** template id, versioned ref, or "auto" (Phase 3 retrieval + champion alias). */
+	/** template id, versioned ref, or "auto" (control plan: retrieve → adapt / cold-start). */
 	templateRef: string;
 	family?: string;
 	language?: string;
@@ -51,8 +64,19 @@ export interface ExecuteOptions {
 	out?: string;
 	maxParallel?: number;
 	mode: RunMode;
-	/** required for live mode. */
+	/**
+	 * WEA control-plane credentials (plan / adapt / cold-start).
+	 * Worker nodes do NOT use this — they use the default pi model.
+	 * If omitted in live mode, loaded from WEA_* env; if still missing, auto
+	 * planning falls back to offline retrieval (no adapt/cold-start).
+	 */
+	control?: WeaControlConfig | null;
+	/** @deprecated use `control` — accepted for older callers */
 	env?: { baseUrl: string; apiKey: string; modelId: string };
+	/** Skip control-plane LLM even if configured (tests / offline). */
+	offlinePlan?: boolean;
+	/** Persist adapted / cold-start templates under library/templates. Default true. */
+	persistPlan?: boolean;
 	budget?: RunBudget;
 	onEvent?: (e: RunEvent) => void;
 }
@@ -65,6 +89,7 @@ export interface ExecuteResult {
 	costMicrounits: number;
 	/** written trace files (live mode only). */
 	files: string[];
+	plan?: PlanResult;
 }
 
 const DEFAULT_BUDGET: RunBudget = {
@@ -73,8 +98,9 @@ const DEFAULT_BUDGET: RunBudget = {
 	monetaryMicrounits: 5_000_000,
 };
 
-// ---- template resolution (retrieval + champion alias) ---------------------------
+// ---- template resolution (legacy helper: retrieval + champion alias) ------------
 
+/** Offline-only resolver (no control LLM). Kept for GUI early validation. */
 export function resolveTemplateRef(opts: Pick<ExecuteOptions, "task" | "templateRef" | "family" | "language">): {
 	ref: string;
 	why: string;
@@ -88,6 +114,15 @@ export function resolveTemplateRef(opts: Pick<ExecuteOptions, "task" | "template
 		return { ref: champ, why: `retrieval → ${chosen.id} (score ${chosen.score.toFixed(2)}) → champion ${champ}` };
 	}
 	return { ref: chosen.id, why: `retrieval → ${chosen.id} (score ${chosen.score.toFixed(2)}; ${chosen.why.join("; ") || "fallback"})` };
+}
+
+function controlFromOpts(opts: ExecuteOptions): WeaControlConfig | null {
+	if (opts.control === null) return null;
+	if (opts.control) return opts.control;
+	if (opts.env) {
+		return { baseUrl: opts.env.baseUrl, apiKey: opts.env.apiKey, modelId: opts.env.modelId };
+	}
+	return loadWeaControlConfig();
 }
 
 // ---- sim node execution ----------------------------------------------------------
@@ -187,18 +222,82 @@ export async function executeRun(opts: ExecuteOptions): Promise<ExecuteResult> {
 	const emit = (e: RunEvent) => opts.onEvent?.(e);
 	const maxParallel = opts.maxParallel ?? 3;
 	const budget = opts.budget ?? DEFAULT_BUDGET;
+	const control = controlFromOpts(opts);
 
-	const { ref: templateRef, why } = resolveTemplateRef(opts);
-	if (opts.templateRef === "auto") emit({ type: "template_resolved", templateRef, why });
+	// ---- plan: retrieve → (control) adapt | cold_start | use -----------------
+	const plan = await planWorkflow({
+		task: opts.task,
+		family: opts.family,
+		language: opts.language,
+		explicitTemplate: opts.templateRef === "auto" ? undefined : opts.templateRef,
+		control: opts.mode === "live" && !opts.offlinePlan ? control : null,
+		offline: opts.mode === "sim" || opts.offlinePlan === true || !control,
+		persist: opts.persistPlan !== false && opts.mode === "live",
+		onLog: (message) => emit({ type: "log", message }),
+	});
 
-	const { graph, cards, templateVersion } = loadTemplate(templateRef);
+	let graph: WorkflowGraph;
+	let cards: Map<string, AgentCard>;
+	let templateVersion: string;
+	let templateRef: string;
+
+	if (plan.mode === "explicit" && opts.templateRef !== "auto") {
+		// load from disk (supports versioned refs / champion aliases)
+		const resolved = resolveTemplateRef(opts);
+		templateRef = resolved.ref;
+		const loaded = loadTemplate(templateRef);
+		graph = loaded.graph;
+		cards = loaded.cards;
+		templateVersion = loaded.templateVersion;
+		emit({ type: "template_resolved", templateRef, why: resolved.why, planMode: "explicit" });
+	} else if (plan.mode === "adapt" || plan.mode === "cold_start") {
+		// cold-start writes base file `${id}.json`; adapt writes versioned challenger.
+		if (plan.mode === "cold_start") templateRef = plan.baseId;
+		else if (plan.writtenPath) templateRef = `${plan.baseId}@${plan.version}`;
+		else templateRef = plan.baseId;
+		graph = plan.graph;
+		templateVersion = plan.version;
+		cards = loadAgentCards();
+		for (const n of graph.nodes) {
+			if (!cards.has(n.agentCard)) {
+				throw new Error(`planned graph node ${n.id} needs missing card ${n.agentCard}`);
+			}
+		}
+		emit({ type: "template_resolved", templateRef, why: plan.why, planMode: plan.mode });
+	} else {
+		// use / offline retrieval — honour champion alias when base id
+		const champ = currentChampion(plan.baseId);
+		templateRef = champ !== plan.baseId ? champ : plan.baseId;
+		if (templateRef.includes("@") || champ !== plan.baseId) {
+			const loaded = loadTemplate(templateRef);
+			graph = loaded.graph;
+			cards = loaded.cards;
+			templateVersion = loaded.templateVersion;
+		} else {
+			graph = plan.graph;
+			templateVersion = plan.version;
+			cards = loadAgentCards();
+		}
+		emit({ type: "template_resolved", templateRef, why: plan.why, planMode: plan.mode });
+	}
+
+	// Workers never inherit control-plane model ids from graph nodes.
+	for (const n of graph.nodes) delete n.model;
+
 	const ledger = new BudgetLedger(budget);
 	const scheduler = new GraphScheduler(graph);
 
-	let factory: SessionFactory | null = null;
+	let factory: PiWorkerFactory | null = null;
+	let workerModelLabel: string | undefined;
 	if (opts.mode === "live") {
-		if (!opts.env) throw new Error("live mode requires env {baseUrl, apiKey, modelId}");
-		factory = new SessionFactory(opts.env);
+		factory = new PiWorkerFactory();
+		workerModelLabel = factory.modelLabel;
+		emit({ type: "log", message: `worker model (pi default): ${workerModelLabel}` });
+		if (control) {
+			emit({ type: "log", message: `control model (WEA): ${control.modelId} @ ${control.baseUrl}` });
+		} else {
+			emit({ type: "log", message: "control model (WEA): offline / not configured — retrieval only" });
+		}
 	}
 
 	const runId = crypto.randomUUID();
@@ -220,6 +319,8 @@ export async function executeRun(opts: ExecuteOptions): Promise<ExecuteResult> {
 				{ name: c.name, description: c.description, tools: c.tools ?? ["(defaults)"] },
 			]),
 		),
+		workerModel: workerModelLabel,
+		controlModel: control?.modelId,
 	});
 
 	scheduler.sealAll();
@@ -290,7 +391,6 @@ export async function executeRun(opts: ExecuteOptions): Promise<ExecuteResult> {
 							factory: factory!,
 							ledger,
 							timing: { plannedAt: rt.plannedAt, readyAt: rt.readyAt ?? rt.plannedAt },
-							modelOverride: node.model,
 							onActivity,
 						});
 			inFlight.set(nodeId, promise);
@@ -342,7 +442,19 @@ export async function executeRun(opts: ExecuteOptions): Promise<ExecuteResult> {
 
 	const endedAt = new Date().toISOString();
 	const status = computeRunStatus(records, graph, scheduler.allTerminal());
-	const snap = ledger.snapshot();
+
+	// Charge control-plane tokens into the ledger snapshot display (best-effort).
+	const controlTokens = (plan.controlUsage?.inputTokens ?? 0) + (plan.controlUsage?.outputTokens ?? 0);
+	if (controlTokens > 0) {
+		ledger.charge({
+			input: plan.controlUsage.inputTokens,
+			output: plan.controlUsage.outputTokens,
+			cachedInput: 0,
+			total: controlTokens,
+			costMicrounits: 0,
+		});
+	}
+	const snapFinal = ledger.snapshot();
 
 	const files: string[] = [];
 	if (opts.mode === "live" && opts.out) {
@@ -360,19 +472,53 @@ export async function executeRun(opts: ExecuteOptions): Promise<ExecuteResult> {
 			endedAt,
 			status,
 			repoRoot: opts.repo,
-			modelId: opts.env!.modelId,
+			modelId: workerModelLabel ?? control?.modelId ?? "pi-default",
 			piVersion: "0.80.6",
 		};
 		mkdirSync(opts.out, { recursive: true });
-		const base = join(opts.out, `${templateRef}-${runId.slice(0, 8)}`);
+		const safeRef = templateRef.replace(/[^a-zA-Z0-9._@-]+/g, "_");
+		const base = join(opts.out, `${safeRef}-${runId.slice(0, 8)}`);
 		writeFileSync(`${base}.trace.json`, JSON.stringify(buildComplianceTrace(manifest), null, 2));
 		writeFileSync(`${base}.pvf.json`, JSON.stringify(buildPvfTrace(manifest), null, 2));
-		writeFileSync(`${base}.manifest.json`, JSON.stringify(manifest, null, 2));
+		writeFileSync(
+			`${base}.manifest.json`,
+			JSON.stringify(
+				{
+					...manifest,
+					plan: {
+						mode: plan.mode,
+						why: plan.why,
+						baseId: plan.baseId,
+						version: plan.version,
+						writtenPath: plan.writtenPath,
+						controlUsage: plan.controlUsage,
+						controlModel: control?.modelId,
+						workerModel: workerModelLabel,
+					},
+				},
+				null,
+				2,
+			),
+		);
 		files.push(`${base}.trace.json`, `${base}.pvf.json`, `${base}.manifest.json`);
 	}
 
-	emit({ type: "run_done", status, tokens: snap.tokensUsed, costMicrounits: snap.monetaryMicrounitsUsed, files });
-	return { runId, status, templateRef, tokens: snap.tokensUsed, costMicrounits: snap.monetaryMicrounitsUsed, files };
+	emit({
+		type: "run_done",
+		status,
+		tokens: snapFinal.tokensUsed,
+		costMicrounits: snapFinal.monetaryMicrounitsUsed,
+		files,
+	});
+	return {
+		runId,
+		status,
+		templateRef,
+		tokens: snapFinal.tokensUsed,
+		costMicrounits: snapFinal.monetaryMicrounitsUsed,
+		files,
+		plan,
+	};
 }
 
 // ---- shared helpers (moved from run.ts) -------------------------------------------

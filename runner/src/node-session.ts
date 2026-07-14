@@ -6,12 +6,18 @@
  *   - recorder inline-extension (L1 capture, budget enforcement)
  *   - JSON output contract: final assistant text must parse (D14/D21);
  *     parse failure = node failure (bounded retry is the scheduler's call).
+ *
+ * Models:
+ *   - Worker nodes use the user's **default pi model** (settings + models.json
+ *     under ~/.pi/agent), NOT the WEA control-plane endpoint.
+ *   - WEA control LLM lives in wea-control.ts (planning / redesign only).
  */
 
 import {
 	AuthStorage,
 	ModelRegistry,
 	SessionManager,
+	SettingsManager,
 	createAgentSession,
 	DefaultResourceLoader,
 	getAgentDir,
@@ -28,40 +34,64 @@ export interface AgentCard {
 	systemPrompt: string;
 }
 
-export interface SessionFactoryConfig {
-	baseUrl: string;
-	apiKey: string;
-	modelId: string;
-	/** Registry template model id to clone provider/api metadata from. */
-	templateModelId?: string;
-}
-
-/** Process-wide singletons (FINDINGS U3: share one auth + registry across nodes). */
-export class SessionFactory {
+/**
+ * Shared pi auth + model registry for worker nodes.
+ * Resolves the same default model interactive `pi` would use.
+ */
+export class PiWorkerFactory {
 	readonly auth: any;
 	readonly registry: any;
+	readonly settings: any;
+	readonly agentDir: string;
+	/** Resolved default model object (provider/id from ~/.pi/agent settings). */
 	readonly model: any;
+	readonly modelLabel: string;
 
-	constructor(cfg: SessionFactoryConfig, authPath = "/tmp/wea-runner-auth.json") {
-		this.auth = AuthStorage.create(authPath);
-		this.auth.setRuntimeApiKey("anthropic", cfg.apiKey);
-		this.registry = ModelRegistry.inMemory(this.auth);
-		const template = this.registry
-			.getAll()
-			.find((m: any) => m.provider === "anthropic" && m.id === (cfg.templateModelId ?? "claude-sonnet-5"));
-		if (!template) throw new Error("template model not found in pi registry");
-		this.baseTemplate = template;
-		this.baseUrl = cfg.baseUrl;
-		this.model = { ...template, id: cfg.modelId, baseUrl: cfg.baseUrl };
+	constructor(agentDir = getAgentDir()) {
+		this.agentDir = agentDir;
+		this.auth = AuthStorage.create(`${agentDir}/auth.json`);
+		this.registry = ModelRegistry.create(this.auth, `${agentDir}/models.json`);
+		this.settings = SettingsManager.create(process.cwd(), agentDir);
+		const provider = this.settings.getDefaultProvider?.();
+		const modelId = this.settings.getDefaultModel?.();
+		let model: any | undefined;
+		if (provider && modelId) {
+			model = this.registry.find?.(provider, modelId);
+		}
+		if (!model) {
+			// Fall back to first available model with configured auth.
+			const all: any[] = this.registry.getAll?.() ?? this.registry.list?.() ?? [];
+			model = all.find((m) => this.registry.hasConfiguredAuth?.(m)) ?? all[0];
+		}
+		if (!model) {
+			throw new Error(
+				"no default pi model available — set defaultProvider/defaultModel in ~/.pi/agent/settings.json " +
+					"and ensure auth for that provider works (same as interactive pi)",
+			);
+		}
+		this.model = model;
+		this.modelLabel = `${model.provider}/${model.id}`;
+	}
+}
+
+/** @deprecated use PiWorkerFactory — kept as alias for older call sites. */
+export type SessionFactoryConfig = {
+	/** ignored: workers no longer use WEA endpoint */
+	baseUrl?: string;
+	apiKey?: string;
+	modelId?: string;
+	templateModelId?: string;
+};
+
+/** @deprecated use PiWorkerFactory */
+export class SessionFactory extends PiWorkerFactory {
+	constructor(_cfg?: SessionFactoryConfig, _authPath?: string) {
+		super();
 	}
 
-	private readonly baseTemplate: any;
-	private readonly baseUrl: string;
-
-	/** A model object for a specific WEA endpoint model id (per-node override). */
-	modelFor(modelId: string | undefined): any {
-		if (!modelId) return this.model;
-		return { ...this.baseTemplate, id: modelId, baseUrl: this.baseUrl };
+	/** Workers ignore model overrides — always default pi model. */
+	modelFor(_modelId?: string): any {
+		return this.model;
 	}
 }
 
@@ -73,10 +103,10 @@ export interface RunNodeParams {
 	taskPrompt: string;
 	cwd: string;
 	repoRoot: string;
-	factory: SessionFactory;
+	factory: PiWorkerFactory;
 	ledger: BudgetLedger;
 	timing: { plannedAt: string; readyAt: string };
-	/** Per-node model override (WEA endpoint model id); omitted = run-level model. */
+	/** Ignored: workers always use the default pi model. Kept for API compat. */
 	modelOverride?: string;
 	/** Optional live tap for GUI/progress: tool calls + usage as they happen. */
 	onActivity?: (a: import("./recorder-ext.ts").RecorderActivity) => void;
@@ -144,7 +174,7 @@ export async function runNode(params: RunNodeParams): Promise<NodeRunRecord> {
 
 	const loader = new DefaultResourceLoader({
 		cwd: params.cwd,
-		agentDir: getAgentDir(),
+		agentDir: factory.agentDir,
 		systemPromptOverride: () => card.systemPrompt,
 		appendSystemPromptOverride: () => [],
 		extensionFactories: [
@@ -164,7 +194,8 @@ export async function runNode(params: RunNodeParams): Promise<NodeRunRecord> {
 	const sessionManager = SessionManager.inMemory(params.cwd);
 	const { session } = await createAgentSession({
 		cwd: params.cwd,
-		model: factory.modelFor(params.modelOverride),
+		agentDir: factory.agentDir,
+		model: factory.model,
 		authStorage: factory.auth,
 		modelRegistry: factory.registry,
 		resourceLoader: loader,
