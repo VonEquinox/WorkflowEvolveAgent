@@ -17,12 +17,16 @@ challenger **wins a paired comparison** against the current champion.
 Default live path for `--template auto`:
 
 ```
-task → retrieval (BM25+rules)
-     → WEA control LLM: use | adapt | cold_start
+task + full template catalog
+     → WEA control LLM (cloud) classifies task & chooses:
+         use | adapt | cold_start
      → structural gate
      → schedule graph
      → each node = pi AgentSession on **default pi model**
 ```
+
+Offline BM25 retrieval is **only** a fallback when `WEA_*` is missing, sim mode,
+or `--offline-plan` — it is **not** the live router.
 
 > **Runtime:** pi SDK · Node ≥ 20 · TypeScript  
 > **Control endpoint:** any Anthropic-messages-compatible API (`WEA_*`)  

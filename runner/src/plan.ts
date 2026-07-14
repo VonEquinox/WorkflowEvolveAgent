@@ -2,12 +2,16 @@
  * Pre-run planning (control plane).
  *
  * Default live path when --template auto (or GUI auto):
- *   1. BM25 + rule retrieval ranks the catalog (cheap, offline).
- *   2. WEA control LLM either:
- *        - adapts the best existing template (wea.proposal/v2 edits), or
- *        - cold-starts a brand-new graph when the catalog is a poor fit.
+ *   1. Load the FULL template catalog (no offline ranking as the decision).
+ *   2. Call the WEA control LLM (WEA_* API) to judge the task and decide:
+ *        - use        — pick a catalog template unchanged
+ *        - adapt      — edit a catalog template (wea.proposal/v2)
+ *        - cold_start — invent a new graph when nothing fits
  *   3. Structural gate ensures the graph executes.
  *   4. Worker nodes then run via pi with the user's default pi model.
+ *
+ * Offline BM25 retrieval is ONLY a fallback when control is unavailable
+ * (--offline-plan / sim / missing WEA_*), not the live router.
  *
  * Explicit --template <id> skips the control LLM and runs that graph as-is.
  */
@@ -18,7 +22,6 @@ import { fileURLToPath } from "node:url";
 import type { RunnerTemplate } from "./library.ts";
 import { loadTemplateCatalog, retrieve, type Candidate, type TaskCard } from "./retrieval.ts";
 import {
-	applyEditsToGraph,
 	applyProposal,
 	gateProposal,
 	structuralIssuesOfGraph,
@@ -35,14 +38,11 @@ import {
 
 const TEMPLATES_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "library", "templates");
 
-/** Minimum retrieval score to treat a catalog template as "good enough to adapt". */
-export const ADAPT_SCORE_THRESHOLD = 0.5;
-
 export type PlanMode = "use" | "adapt" | "cold_start" | "explicit";
 
 export interface PlanResult {
 	mode: PlanMode;
-	/** Base family id (t0-direct / t1-… / cold-start-…). */
+	/** Base family id (t0-direct / t1-… / cold-…). */
 	baseId: string;
 	/** Version string on the graph that will run. */
 	version: string;
@@ -54,29 +54,36 @@ export interface PlanResult {
 	writtenPath?: string;
 	/** Control-plane token usage (0 if offline / explicit / skipped). */
 	controlUsage: ControlUsage;
-	/** Retrieval ranking (when auto). */
+	/** Offline retrieval ranking only (fallback path). */
 	candidates?: Candidate[];
 	/** Raw control decision JSON (debug). */
 	decision?: Record<string, unknown>;
 }
 
 const PLANNER_SYSTEM = `You are the WEA control-plane planner for a multi-agent coding workflow system.
-You do NOT implement the coding task. You only choose / adapt / invent the WORKFLOW GRAPH that
-worker agents (running under the user's default pi model) will execute.
 
-You receive:
-  - the user task
-  - the top retrieval candidates from an existing template catalog (with scores and graph shapes)
+You are the ONLY router. There is no offline scorer making decisions for you.
+You receive the full user task and the complete catalog of existing workflow templates
+(with their graphs). YOU classify the task (bugfix vs feature vs refactor vs research vs …)
+and YOU choose how workers should be orchestrated.
+
+You do NOT implement the coding task yourself. Worker agents (user's default pi model)
+will execute the graph you select or invent.
 
 Decide ONE of:
-  A) "use"        — run the best catalog template unchanged
-  B) "adapt"      — start from a catalog template and emit structural edits (wea.proposal/v2)
+  A) "use"        — pick one catalog template and run it unchanged
+  B) "adapt"      — start from one catalog template and emit structural edits (wea.proposal/v2)
   C) "cold_start" — catalog is a poor fit; invent a full new graph from scratch
 
-Prefer "adapt" over "cold_start" when a candidate score is decent and only needs small changes
-(e.g. tighter prompts, drop a redundant explorer, add a verifier loop).
-Use "cold_start" when no candidate is relevant, or the task needs a topology the catalog lacks.
-Use "use" when the best candidate already fits well.
+Classification guidance (you decide; these are hints, not rules):
+  - failing test / off-by-one / crash / regression → often t2-bugfix (or adapt it)
+  - small direct change with clear acceptance → often t0-direct or t1-safe-generic
+  - multi-approach design / large feature / unclear exploration → often t3-complex
+  - nothing fits topology → cold_start a small custom graph
+
+Prefer "use" when a catalog graph already fits.
+Prefer "adapt" for small prompt/topology tweaks (drop redundant node, tighten prompts, add loop).
+Use "cold_start" only when no catalog template is a reasonable base.
 
 Agent cards available to nodes (agentCard field MUST be one of these):
   inspector, explorer, aggregator, implementer, verifier
@@ -91,18 +98,20 @@ OUTPUT: exactly one JSON object (no markdown), one of these shapes:
 // A) use
 {
   "decision": "use",
+  "task_kind": "bugfix|feature|refactor|research|other",
   "base_template": "<catalog id>",
-  "reasoning": "<why this is already good enough>"
+  "reasoning": "<why this template fits this task>"
 }
 
 // B) adapt
 {
   "decision": "adapt",
+  "task_kind": "bugfix|feature|refactor|research|other",
   "schema": "wea.proposal/v2",
   "target_template": "<catalog id>",
   "target_version": "<version from catalog>",
-  "edits": [ /* same ops as meta-improver: remove_node, add_node, edit_prompt, set_model,
-               add_edge, remove_edge, set_loop, remove_loop */ ],
+  "edits": [ /* remove_node | add_node | edit_prompt | set_model |
+               add_edge | remove_edge | set_loop | remove_loop */ ],
   "reasoning": "<why>",
   "hypothesis": "<what should improve>",
   "expected_effect": "<predicted delta>"
@@ -111,6 +120,7 @@ OUTPUT: exactly one JSON object (no markdown), one of these shapes:
 // C) cold_start
 {
   "decision": "cold_start",
+  "task_kind": "bugfix|feature|refactor|research|other",
   "id": "cold-<short-slug>",
   "version": "1.0.0",
   "summary": "<one line>",
@@ -140,7 +150,8 @@ Rules for graphs you emit (adapt edits or cold_start):
   - FEEDBACK edges must set loopId and appear in a loop's feedbackEdges
   - keep graphs small (2–6 nodes) unless the task truly needs more
   - do NOT put absolute paths or secrets in prompts
-  - omit per-node "model" fields (workers use the user's default pi model)`;
+  - omit per-node "model" fields (workers use the user's default pi model)
+  - base_template / target_template MUST be an id present in the catalog when using use/adapt`;
 
 export interface PlanOptions {
 	task: string;
@@ -151,9 +162,9 @@ export interface PlanOptions {
 	control?: WeaControlConfig | null;
 	/** Persist adapted / cold-start graphs under library/templates. Default true when control is used. */
 	persist?: boolean;
-	/** Offline: never call control LLM; just retrieval (+ champion is applied by caller if desired). */
+	/** Offline: never call control LLM; BM25 fallback only. */
 	offline?: boolean;
-	/** Score below this → prefer cold_start when control LLM is available. */
+	/** @deprecated ignored — control plane owns the decision; kept for API compat. */
 	adaptThreshold?: number;
 	onLog?: (msg: string) => void;
 }
@@ -179,8 +190,19 @@ function writeTemplateDoc(doc: RunnerTemplateDoc, path: string): void {
 	writeFileSync(path, JSON.stringify(doc, null, 2) + "\n");
 }
 
+/** Full catalog brief for the control LLM (no scores — model judges). */
+function catalogBriefForControl(catalog: RunnerTemplate[]) {
+	return catalog.map((t) => ({
+		id: t.id,
+		version: t.version,
+		summary: t.summary,
+		graph: t.graph,
+	}));
+}
+
 /**
- * Offline / no-control fallback: pure retrieval, run best (or safe generic) as-is.
+ * Offline / no-control fallback ONLY (sim, --offline-plan, missing WEA_*).
+ * Live auto path must not rely on this.
  */
 export function planOffline(opts: PlanOptions): PlanResult {
 	const card: TaskCard = {
@@ -197,7 +219,7 @@ export function planOffline(opts: PlanOptions): PlanResult {
 		mode: "use",
 		baseId: doc.id,
 		version: doc.version,
-		why: `offline retrieval → ${top.id} (score ${top.score.toFixed(2)}; ${top.why.join("; ") || "fallback"})`,
+		why: `offline fallback retrieval → ${top.id} (score ${top.score.toFixed(2)}; ${top.why.join("; ") || "fallback"})`,
 		graph: doc.graph,
 		controlUsage: zeroUsage(),
 		candidates: ranked,
@@ -205,15 +227,13 @@ export function planOffline(opts: PlanOptions): PlanResult {
 }
 
 /**
- * Main planner. When control config is present and template is auto, calls WEA model.
+ * Main planner. Live auto → WEA control API owns classification + template choice.
  */
 export async function planWorkflow(opts: PlanOptions): Promise<PlanResult> {
 	const log = opts.onLog ?? (() => {});
-	const threshold = opts.adaptThreshold ?? ADAPT_SCORE_THRESHOLD;
 
 	if (opts.explicitTemplate && opts.explicitTemplate !== "auto") {
 		const catalog = loadTemplateCatalog();
-		// Support versioned refs: try catalog base first, else load via library path in caller.
 		const baseId = opts.explicitTemplate.split("@", 1)[0]!;
 		const fromCatalog = catalog.find((c) => c.id === baseId);
 		if (fromCatalog && !opts.explicitTemplate.includes("@")) {
@@ -232,49 +252,36 @@ export async function planWorkflow(opts: PlanOptions): Promise<PlanResult> {
 			baseId: opts.explicitTemplate,
 			version: "?",
 			why: `explicit template ref ${opts.explicitTemplate}`,
-			graph: { nodes: [], edges: [], loops: [] }, // placeholder; orchestrator loads real graph
+			graph: { nodes: [], edges: [], loops: [] },
 			controlUsage: zeroUsage(),
 		};
 	}
 
 	if (opts.offline || !opts.control) {
+		log("[plan] no WEA control config — offline BM25 fallback only");
 		return planOffline(opts);
 	}
 
-	const card: TaskCard = {
-		goal: opts.task,
-		family: opts.family,
-		language: opts.language,
-		hasOracle: true,
-	};
-	const ranked = retrieve(card);
 	const catalog = loadTemplateCatalog();
-	const top = ranked[0]!;
-	log(`[plan] retrieval top=${top.id} score=${top.score.toFixed(2)}`);
+	if (catalog.length === 0) throw new Error("template catalog is empty");
 
-	const catalogBrief = ranked.slice(0, 4).map((c) => {
-		const doc = catalog.find((t) => t.id === c.id)!;
-		return {
-			id: c.id,
-			version: c.version,
-			score: c.score,
-			why: c.why,
-			summary: c.summary,
-			graph: doc.graph,
-		};
-	});
+	log(`[plan] control-plane routing via ${opts.control.modelId} (${catalog.length} catalog templates, no offline ranker)`);
 
 	const user = [
-		"## Task",
+		"## Task (classify and route this yourself)",
 		opts.task,
 		"",
-		"## TaskCard",
-		JSON.stringify({ family: opts.family ?? null, language: opts.language ?? null, hasOracle: true }),
+		"## Optional hints from the user (may be empty — do not require them)",
+		JSON.stringify({
+			family_hint: opts.family ?? null,
+			language_hint: opts.language ?? null,
+		}),
 		"",
-		`## Retrieval ranking (threshold for "good fit" ≈ ${threshold})`,
-		JSON.stringify(catalogBrief, null, 2),
+		"## Full workflow template catalog",
+		"Pick from these ids for use/adapt, or cold_start if none fit.",
+		JSON.stringify(catalogBriefForControl(catalog), null, 2),
 		"",
-		"Emit the decision JSON now.",
+		"Emit the decision JSON now. You are the only router.",
 	].join("\n");
 
 	const completion = await controlComplete(opts.control, {
@@ -292,20 +299,25 @@ export async function planWorkflow(opts: PlanOptions): Promise<PlanResult> {
 	}
 
 	const kind = String(decision.decision ?? "").toLowerCase();
-	log(`[plan] control decision=${kind}`);
+	const taskKind = decision.task_kind ? String(decision.task_kind) : "?";
+	log(`[plan] control decision=${kind} task_kind=${taskKind}`);
 
 	// ---- use ----
 	if (kind === "use") {
-		const id = String(decision.base_template ?? top.id);
+		const id = String(decision.base_template ?? "");
+		if (!id || !catalog.some((c) => c.id === id)) {
+			log(`[plan] control chose unknown template "${id}"; offline fallback`);
+			const fb = planOffline(opts);
+			return { ...fb, controlUsage: usage, why: `${fb.why} (unknown base_template)` };
+		}
 		const doc = catalogDoc(id, catalog);
 		return {
 			mode: "use",
 			baseId: doc.id,
 			version: doc.version,
-			why: `control:use ${doc.id} — ${String(decision.reasoning ?? "").slice(0, 200)}`,
+			why: `control:use ${doc.id} [${taskKind}] — ${String(decision.reasoning ?? "").slice(0, 200)}`,
 			graph: doc.graph,
 			controlUsage: usage,
-			candidates: ranked,
 			decision,
 		};
 	}
@@ -314,10 +326,14 @@ export async function planWorkflow(opts: PlanOptions): Promise<PlanResult> {
 	if (kind === "adapt") {
 		const proposal = decision as unknown as Proposal;
 		if (proposal.schema !== "wea.proposal/v2") {
-			// tolerate missing schema tag
 			(proposal as any).schema = "wea.proposal/v2";
 		}
-		const target = String(proposal.target_template || top.id);
+		const target = String(proposal.target_template || "");
+		if (!target || !catalog.some((c) => c.id === target)) {
+			log(`[plan] adapt target unknown "${target}"; offline fallback`);
+			const fb = planOffline(opts);
+			return { ...fb, controlUsage: usage, why: `${fb.why} (unknown adapt target)` };
+		}
 		const doc = catalogDoc(target, catalog);
 		proposal.target_template = doc.id;
 		proposal.target_version = doc.version;
@@ -328,10 +344,9 @@ export async function planWorkflow(opts: PlanOptions): Promise<PlanResult> {
 				mode: "use",
 				baseId: doc.id,
 				version: doc.version,
-				why: `control:adapt with empty edits → use ${doc.id}`,
+				why: `control:adapt [${taskKind}] empty edits → use ${doc.id}`,
 				graph: doc.graph,
 				controlUsage: usage,
-				candidates: ranked,
 				decision,
 			};
 		}
@@ -343,16 +358,14 @@ export async function planWorkflow(opts: PlanOptions): Promise<PlanResult> {
 				mode: "use",
 				baseId: doc.id,
 				version: doc.version,
-				why: `control:adapt rejected by structural gate (${gate.violations.join("; ")}) → use ${doc.id}`,
+				why: `control:adapt [${taskKind}] rejected by structural gate (${gate.violations.join("; ")}) → use ${doc.id}`,
 				graph: doc.graph,
 				controlUsage: usage,
-				candidates: ranked,
 				decision,
 			};
 		}
 
 		const next = applyProposal(doc, proposal);
-		// Strip per-node models so workers always use pi default.
 		for (const n of next.graph.nodes) delete n.model;
 
 		let writtenPath: string | undefined;
@@ -366,11 +379,10 @@ export async function planWorkflow(opts: PlanOptions): Promise<PlanResult> {
 			mode: "adapt",
 			baseId: next.id,
 			version: next.version,
-			why: `control:adapt ${doc.id} → v${next.version} (${proposal.edits.map((e) => e.op).join(", ")})`,
+			why: `control:adapt [${taskKind}] ${doc.id} → v${next.version} (${proposal.edits.map((e) => e.op).join(", ")})`,
 			graph: next.graph,
 			writtenPath,
 			controlUsage: usage,
-			candidates: ranked,
 			decision,
 		};
 	}
@@ -409,16 +421,14 @@ export async function planWorkflow(opts: PlanOptions): Promise<PlanResult> {
 			mode: "cold_start",
 			baseId: id,
 			version,
-			why: `control:cold_start ${id} — ${String(decision.reasoning ?? "").slice(0, 200)}`,
+			why: `control:cold_start [${taskKind}] ${id} — ${String(decision.reasoning ?? "").slice(0, 200)}`,
 			graph,
 			writtenPath,
 			controlUsage: usage,
-			candidates: ranked,
 			decision,
 		};
 	}
 
-	// Unknown decision → offline
 	log(`[plan] unknown decision "${kind}"; offline fallback`);
 	const fb = planOffline(opts);
 	return { ...fb, controlUsage: usage, why: `${fb.why} (unknown decision fallback)` };
@@ -431,10 +441,6 @@ export function adaptTemplateLocally(template: RunnerTemplateDoc, proposal: Prop
 	return next;
 }
 
-/** Re-export graph clone helper used by tests. */
 export function cloneGraph(g: WorkflowGraph): WorkflowGraph {
 	return structuredClone(g);
 }
-
-// silence unused import if tree-shaken oddly
-void applyEditsToGraph;

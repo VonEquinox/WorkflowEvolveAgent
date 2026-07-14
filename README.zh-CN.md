@@ -14,12 +14,15 @@ WEA 把「一次 coding agent 调用」变成一张**可版本化的工作流图
 默认 live（`--template auto`）流程：
 
 ```
-任务 → 检索（BM25 + 规则）
-     → WEA 控制模型：use | adapt | cold_start
+任务 + 完整模板目录
+     → WEA 控制模型（云端 API）自己分类任务并决定：
+         use | adapt | cold_start
      → 结构门
      → 调度图
      → 每个节点 = pi AgentSession（**用户默认 pi 模型**）
 ```
+
+离线 BM25 **只**在没有 `WEA_*`、sim 模式或 `--offline-plan` 时兜底，**不是** live 路由。
 
 > **运行时：** pi SDK · Node ≥ 20 · TypeScript  
 > **控制端点：** Anthropic Messages 兼容 API（`WEA_*`）  
