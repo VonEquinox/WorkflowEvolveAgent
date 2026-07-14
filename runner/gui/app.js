@@ -67,7 +67,20 @@ async function boot() {
 		for (const b of $("modeSeg").children) b.classList.toggle("selected", b === btn);
 	});
 	$("runForm").addEventListener("submit", startRun);
-	$("detailClose").addEventListener("click", closeDetail);
+	$("detailClose").addEventListener("click", (ev) => {
+		ev.preventDefault();
+		ev.stopPropagation();
+		closeDetail();
+	});
+	// Esc / click on the DAG area closes the drawer so it never permanently occludes the graph
+	document.addEventListener("keydown", (ev) => {
+		if (ev.key === "Escape") closeDetail();
+	});
+	$("canvas").addEventListener("click", (ev) => {
+		// ignore clicks that originated on a node (those open the drawer)
+		if (ev.target.closest?.("g.node")) return;
+		closeDetail();
+	});
 	previewTemplate("auto");
 }
 
@@ -422,7 +435,9 @@ function openDetail(id) {
 	const n = S.nodes.get(id);
 	if (!n) return;
 	S.detailNode = id;
-	$("detail").hidden = false;
+	const el = $("detail");
+	el.hidden = false;
+	el.style.display = ""; // clear any inline hide from closeDetail
 	$("detailTitle").textContent = id;
 	const card = S.cards[n.card];
 	const acts = n.acts.slice(-20).map((a) => `<div>${escapeHtml(a)}</div>`).join("");
@@ -445,7 +460,9 @@ function openDetail(id) {
 
 function closeDetail() {
 	S.detailNode = null;
-	$("detail").hidden = true;
+	const el = $("detail");
+	el.hidden = true;
+	el.style.display = "none";
 }
 
 const escapeHtml = (s) =>
