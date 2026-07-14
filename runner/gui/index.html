@@ -43,14 +43,7 @@
         <span class="field-label">Target repo</span>
         <input id="repo" type="text" placeholder="/tmp/wea-sandbox2" />
       </label>
-      <div class="field">
-        <span class="field-label">Mode</span>
-        <div class="segmented" id="modeSeg">
-          <button type="button" class="seg-btn selected" data-mode="sim" id="simBtn">Simulate</button>
-          <button type="button" class="seg-btn" data-mode="live" id="liveBtn" title="needs WEA_* env on the server">Live</button>
-        </div>
-        <p class="field-hint" id="modeHint">simulate: full scheduling demo, no endpoint, no spend</p>
-      </div>
+      <p class="field-hint">Runs use real pi workers in an isolated Git worktree. The source checkout is not modified automatically.</p>
       <button type="submit" class="run-btn" id="runBtn">Run workflow</button>
     </form>
 

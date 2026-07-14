@@ -28,7 +28,7 @@ WEA 把「一次 coding agent 调用」变成一张**可版本化的工作流图
      → 每个节点 = pi AgentSession（**用户默认 pi 模型**）
 ```
 
-离线 BM25 **只**在没有 `WEA_*`、sim 模式或 `--offline-plan` 时兜底，**不是** live 路由。
+离线 BM25 **只**在没有 `WEA_*` 或显式使用 `--offline-plan` 时兜底，**不是**控制面路由。
 
 ### 主 Agent 双回路（控制面）
 
@@ -60,7 +60,7 @@ WEA 把「一次 coding agent 调用」变成一张**可版本化的工作流图
 ./bin/wea doctor
 ./bin/wea templates
 ./bin/wea run --task "修复超时" --template auto --repo /path/to/code
-./bin/wea run --task "..." --template t-explore-master-implement --mode sim
+./bin/wea run --task "..." --template t1-safe-generic --offline-plan
 ./bin/wea gui
 ```
 
@@ -119,7 +119,7 @@ runs/<时间戳>-<id>/
 | **自算 content digest** | pi 不提供 digest，WEA 自哈希 |
 | **CLI** | `run.ts` |
 | **Web GUI** | SSE 实时 DAG + 每 agent 活动 |
-| **Simulate** | 真调度器 + 桩节点，零 API |
+| **每次运行独立 worktree** | 真 worker 只改隔离检出，不自动合并源工作区 |
 
 ### 1.2 选择与复用（L3）
 
@@ -608,7 +608,7 @@ chmod +x install.sh
 ```bash
 cd runner
 npm test && npm run smoke
-npm run gui    # http://127.0.0.1:7788  Simulate
+npm run gui    # http://127.0.0.1:7788；执行任务会使用真实 pi worker
 ```
 
 ### Live
@@ -637,9 +637,9 @@ npx tsx src/run.ts \
 ## 13. 已验证 vs 待接线
 
 **已验证（live）：** T2 真修 bug、T3 真加功能；meta 可出可运行 challenger。  
-**已验证（offline）：** 检索 / 缓存 / 冠军门；MCP bridge 全链路；GUI Simulate。  
+**已验证（offline）：** 检索 / 缓存 / 冠军门；MCP bridge 全链路；Graph/角色 Schema；worktree 与 trace 回归。
 
-**待接线：** 多 pair 线上 A/B；cache 挂 spawn；bridge 挂 node session；worktree 隔离；节点预算强制；全自动 evolve 闭环。
+**待接线：** 多 pair 线上 A/B；cache 挂 spawn；bridge 挂 node session；全自动 champion promotion / evolve 闭环。
 
 ---
 

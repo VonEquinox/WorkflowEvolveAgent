@@ -25,8 +25,6 @@ const S = {
 	totals: { tokens: 0, cost: 0 },
 	es: null,
 	detailNode: null,
-	liveAvailable: false,
-	mode: "sim",
 };
 
 // ---- formatting ----------------------------------------------------------------
@@ -42,12 +40,7 @@ const fmtElapsed = (ms) => {
 // ---- boot ----------------------------------------------------------------------
 
 async function boot() {
-	const health = await fetch("/api/health").then((r) => r.json()).catch(() => ({ liveAvailable: false }));
-	S.liveAvailable = !!health.liveAvailable;
-	if (!S.liveAvailable) {
-		$("liveBtn").disabled = true;
-		$("modeHint").textContent = "simulate: full scheduling demo, no endpoint, no spend · live disabled (no WEA_* env)";
-	}
+	await fetch("/api/health").catch(() => null);
 
 	const data = await fetch("/api/templates").then((r) => r.json());
 	const sel = $("template");
@@ -60,12 +53,6 @@ async function boot() {
 	}
 
 	sel.addEventListener("change", () => previewTemplate(sel.value));
-	$("modeSeg").addEventListener("click", (ev) => {
-		const btn = ev.target.closest(".seg-btn");
-		if (!btn || btn.disabled) return;
-		S.mode = btn.dataset.mode;
-		for (const b of $("modeSeg").children) b.classList.toggle("selected", b === btn);
-	});
 	$("runForm").addEventListener("submit", startRun);
 	$("detailClose").addEventListener("click", (ev) => {
 		ev.preventDefault();
@@ -111,7 +98,6 @@ async function startRun(ev) {
 		task: $("task").value.trim(),
 		template: $("template").value,
 		repo: $("repo").value.trim() || undefined,
-		mode: S.mode,
 	};
 	if (!body.task) return;
 
@@ -157,12 +143,12 @@ function handleEvent(e) {
 			initGraph(e.graph, e.cards);
 			renderDag();
 			$("graphTitle").textContent = `${e.templateRef} @ ${e.templateVersion}`;
-			$("graphMeta").textContent = `${e.graph.nodes.length} nodes · ${e.mode} · run ${e.runId.slice(0, 8)}`;
-			setChip("running", e.mode === "sim" ? "simulating" : "running");
+			$("graphMeta").textContent = `${e.graph.nodes.length} nodes · run ${e.runId.slice(0, 8)}`;
+			setChip("running", "running");
 			clearInterval(S.timer);
 			S.timer = setInterval(() => { $("statElapsed").textContent = fmtElapsed(Date.now() - S.startedAt); }, 500);
 			updateStats();
-			feed("", `run started: ${e.templateRef} (${e.mode})`);
+			feed("", `run started: ${e.templateRef}`);
 			break;
 		}
 

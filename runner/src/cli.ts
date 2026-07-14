@@ -95,7 +95,6 @@ run options:
   --template <id|auto>       Template id or "auto" (default: auto)
   --repo <dir>               Working repo for workers (default: cwd)
   --out <dir>                Runs root; each run gets a subdir journal (default: ./runs)
-  --mode live|sim            live = real models; sim = offline stub (default: live)
   --family <name>            Optional task family hint (bugfix|feature|…)
   --language <lang>          Optional language hint
   --max-parallel <n>         Max concurrent nodes (default: 3)
@@ -107,7 +106,7 @@ run options:
 
 Examples:
   wea run --task "fix the flaky timeout in auth tests" --template auto
-  wea run --task "add health check" --template t-explore-master-implement --mode sim
+  wea run --task "add health check" --template t1-safe-generic
   wea run --task "..." --repo ~/proj --out ~/proj/.wea-runs
   wea gui
   wea templates
@@ -132,12 +131,14 @@ async function cmdRun(argv: string[]): Promise<void> {
 		return;
 	}
 
+	if (argv.includes("--mode")) {
+		throw new Error("--mode has been removed; every run uses real pi workers in an isolated worktree");
+	}
+
 	const task = req(argv, "--task");
 	const template = req(argv, "--template", "auto");
 	const repo = resolve(req(argv, "--repo", process.cwd()));
 	const outRoot = resolve(req(argv, "--out", defaultRunsDir(process.cwd())));
-	const mode = (req(argv, "--mode", "live") as "live" | "sim");
-	if (mode !== "live" && mode !== "sim") throw new Error(`--mode must be live|sim, got ${mode}`);
 	const family = opt(argv, "--family");
 	const language = opt(argv, "--language");
 	const maxParallel = Number(req(argv, "--max-parallel", "3"));
@@ -150,14 +151,12 @@ async function cmdRun(argv: string[]): Promise<void> {
 	const journal = new RunJournal({
 		outRoot,
 		task,
-		mode,
 		templateRef: template,
 		cliArgs: {
 			task,
 			template,
 			repo,
 			outRoot,
-			mode,
 			family,
 			language,
 			maxParallel,
@@ -170,10 +169,10 @@ async function cmdRun(argv: string[]): Promise<void> {
 
 	journal.log(`WEA run journal → ${journal.runDir}`);
 	journal.log(`task: ${task}`);
-	journal.log(`template: ${template}  mode: ${mode}  repo: ${repo}`);
+	journal.log(`template: ${template}  repo: ${repo}`);
 
-	const control = offlinePlan || mode === "sim" ? null : loadWeaControlConfig();
-	if (template === "auto" && !control && mode === "live") {
+	const control = offlinePlan ? null : loadWeaControlConfig();
+	if (template === "auto" && !control) {
 		journal.log("[warn] WEA_* not set — auto plan uses offline BM25; workers still use pi default");
 	}
 	if (control) {
@@ -190,7 +189,6 @@ async function cmdRun(argv: string[]): Promise<void> {
 		repo,
 		out: outRoot,
 		maxParallel,
-		mode,
 		control,
 		offlinePlan,
 		persistPlan: persist,
@@ -288,7 +286,7 @@ function cmdDoctor(): void {
 
 	const catalog = loadTemplateCatalog();
 	console.log(`  templates: ${catalog.length} in catalog`);
-	console.log("\nOK — run: wea run --task \"...\" --mode sim");
+	console.log("\nOK — run: wea run --task \"...\"");
 }
 
 function cmdGui(argv: string[]): void {
@@ -340,7 +338,7 @@ async function main(): Promise<void> {
 		return;
 	}
 
-	// legacy: wea --task ...  or wea --mode sim ...
+	// legacy: wea --task ...
 	if (head?.startsWith("-")) {
 		await cmdRun(argv);
 		return;

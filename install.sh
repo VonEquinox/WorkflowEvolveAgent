@@ -24,7 +24,7 @@ WorkflowEvolveAgent installer
 
 After install, CLI:
   ./bin/wea help
-  ./bin/wea run --task "..." --mode sim
+  ./bin/wea run --task "..." --offline-plan
   ./bin/wea gui
 
 Requirements: Node.js >= 20, npm, bash
@@ -83,12 +83,16 @@ ok "mcp-bridge dependencies"
 ENV_EXAMPLE="$ROOT/.env.example"
 if [[ ! -f "$ENV_EXAMPLE" ]]; then
   cat > "$ENV_EXAMPLE" <<'EOF'
-# Copy to .env (gitignored) or export in your shell before a live run.
+# Copy to .env (gitignored) or export in your shell for control-assisted planning.
 # Any Anthropic-messages-compatible endpoint works.
 
 WEA_BASE_URL=https://your-endpoint.example/v1
 WEA_API_KEY=sk-...
 WEA_MODEL=your-model-id
+
+# Optional control transport settings (defaults shown)
+# WEA_CONTROL_TIMEOUT_MS=60000
+# WEA_CONTROL_MAX_RETRIES=2
 
 # Optional GUI port (default 7788)
 # WEA_GUI_PORT=7788
@@ -124,16 +128,15 @@ cat <<EOF
 
 Next steps:
 
-  1) Offline demo (no endpoint)
-       cd runner && npm run gui
-       open http://127.0.0.1:7788   # Simulate mode
+  1) Offline checks (no model calls)
+       (cd runner && npm test && npm run smoke)
 
-  2) Live run (needs Anthropic-messages endpoint)
-       cp .env.example .env   # then edit values
+  2) Real run (needs a configured pi default worker model)
+       cp .env.example .env   # optional: enables control-assisted planning
        set -a && source .env && set +a
-       cd runner
-       npx tsx src/run.ts --task "fix the failing test" \\
+       ./bin/wea run --task "fix the failing test" \
          --template auto --repo /path/to/target --out runs
+       ./bin/wea gui          # browser UI, same real execution path
 
   3) Docs
        README.md          English

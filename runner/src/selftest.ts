@@ -27,6 +27,7 @@ import {
 	upstreamOutputs,
 } from "./orchestrator.ts";
 import { retrieve } from "./retrieval.ts";
+import { planOffline } from "./plan.ts";
 import { formatWeaNow, withCurrentTime } from "./time-banner.ts";
 import { captureWorkspaceResult, prepareIsolatedWorkspace, removeIsolatedWorkspace } from "./workspace.ts";
 import { validateAgentOutput, validateWorkflowGraph } from "./schemas.ts";
@@ -56,6 +57,11 @@ console.log("Phase 3 — retrieval");
 	check("read/handoff family → t-read-master", readMaster[0]!.id === "t-read-master");
 	const featMaster = retrieve({ goal: "add a new API endpoint following existing patterns", family: "feature" });
 	check("feature family → t-feature-master", featMaster[0]!.id === "t-feature-master");
+	const offlineFeature = planOffline({ task: "add a new API endpoint", family: "feature", offline: true });
+	check(
+		"offline planner never selects a control-handoff graph",
+		!offlineFeature.graph.nodes.some((node) => node.controlHandoff || node.agentCard === "master-handoff"),
+	);
 }
 
 // ---- Phase 4 ----------------------------------------------------------------
@@ -238,7 +244,7 @@ console.log("Correctness — generation scope / escalate / loop / renderPrompt")
 
 	// (b) escalate with replan unavailable → failure not success (detect + terminal code path).
 	// Pure helper: detectEscalation must fire; the orchestrator terminal-fail path is
-	// covered by ensuring ESCALATE_NO_REPLAN semantics when replan is off — we simulate
+	// covered by ensuring ESCALATE_NO_REPLAN semantics when replan is off — we model
 	// the post-condition computeRunStatus must see after that path mutates the record.
 	const escOut = { summary: "need replan", escalate: true, escalate_reason: "wrong graph" };
 	const esc = detectEscalation("implement", 1, escOut, "success");

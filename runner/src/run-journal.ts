@@ -10,7 +10,7 @@
  *   handoff.<n>.json
  *   replan.<n>.json
  *   improve.json
- *   nodes/<nodeId>.attempt-<n>.json
+ *   nodes/g<generation>.<nodeId>.attempt-<n>.json
  *   summary.md
  *   meta.json         run identity / paths
  *
@@ -27,7 +27,6 @@ export interface JournalMeta {
 	runId?: string;
 	task: string;
 	templateRef?: string;
-	mode: string;
 	startedAt: string;
 	endedAt?: string;
 	status?: string;
@@ -46,7 +45,6 @@ export class RunJournal {
 	constructor(opts: {
 		outRoot: string;
 		task: string;
-		mode: string;
 		templateRef?: string;
 		cliArgs?: Record<string, unknown>;
 		/** Optional fixed run dir name; default: timestamp + random. */
@@ -62,7 +60,6 @@ export class RunJournal {
 		this.meta = {
 			runDir: this.runDir,
 			task: opts.task,
-			mode: opts.mode,
 			templateRef: opts.templateRef,
 			startedAt: new Date().toISOString(),
 			cliArgs: opts.cliArgs,
@@ -72,7 +69,6 @@ export class RunJournal {
 			type: "journal_open",
 			at: this.meta.startedAt,
 			task: opts.task,
-			mode: opts.mode,
 			templateRef: opts.templateRef,
 			runDir: this.runDir,
 		});
@@ -151,7 +147,7 @@ export class RunJournal {
 				}
 				this.graphs.push({ phase: e.templateRef, graph: e.graph, at: new Date().toISOString() });
 				this.log(
-					`sealed generation ${e.graphGeneration} with ${e.graph.nodes.length} nodes; starting (${e.mode}) template=${e.templateRef}`,
+					`sealed generation ${e.graphGeneration} with ${e.graph.nodes.length} nodes; starting template=${e.templateRef}`,
 				);
 				if (e.workerModel) this.log(`workers: ${e.workerModel}`);
 				if (e.controlModel) this.log(`control: ${e.controlModel}`);
@@ -402,7 +398,6 @@ export class RunJournal {
 			`- **status:** ${e.status}`,
 			`- **task:** ${JSON.stringify(this.meta.task)}`,
 			`- **template:** ${this.meta.templateRef ?? "?"}`,
-			`- **mode:** ${this.meta.mode}`,
 			`- **runId:** ${this.meta.runId ?? "?"}`,
 			`- **started:** ${this.meta.startedAt}`,
 			`- **ended:** ${this.meta.endedAt}`,

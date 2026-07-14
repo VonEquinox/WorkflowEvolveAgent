@@ -1,7 +1,7 @@
 /**
  * Pre-run planning (control plane).
  *
- * Default live path when --template auto (or GUI auto):
+ * Default control-assisted path when --template auto (or GUI auto):
  *   1. Load the FULL template catalog (no offline ranking as the decision).
  *   2. Call the WEA control LLM (WEA_* API) to judge the task and decide:
  *        - use        — pick a catalog template unchanged
@@ -11,7 +11,7 @@
  *   4. Worker nodes then run via pi with the user's default pi model.
  *
  * Offline BM25 retrieval is ONLY a fallback when control is unavailable
- * (--offline-plan / sim / missing WEA_*), not the live router.
+ * (--offline-plan / missing WEA_*), not the control-assisted router.
  *
  * Explicit --template <id> skips the control LLM and runs that graph as-is.
  */
@@ -214,19 +214,22 @@ function catalogBriefForControl(catalog: RunnerTemplate[]) {
 }
 
 /**
- * Offline / no-control fallback ONLY (sim, --offline-plan, missing WEA_*).
- * Live auto path must not rely on this.
+ * Offline / no-control fallback ONLY (--offline-plan or missing WEA_*).
+ * Control-assisted auto planning must not rely on this.
  */
 export function planOffline(opts: PlanOptions): PlanResult {
+	const catalog = loadTemplateCatalog().filter(
+		(template) => !template.graph.nodes.some((node) => node.controlHandoff || node.agentCard === "master-handoff"),
+	);
+	if (catalog.length === 0) throw new Error("no worker-only templates are available for offline planning");
 	const card: TaskCard = {
 		goal: opts.task,
 		family: opts.family,
 		language: opts.language,
 		hasOracle: true,
 	};
-	const ranked = retrieve(card);
+	const ranked = retrieve(card, catalog);
 	const top = ranked[0]!;
-	const catalog = loadTemplateCatalog();
 	const doc = catalogDoc(top.id, catalog);
 	return {
 		mode: "use",
@@ -240,7 +243,7 @@ export function planOffline(opts: PlanOptions): PlanResult {
 }
 
 /**
- * Main planner. Live auto → WEA control API owns classification + template choice.
+ * Main planner. Control-assisted auto → WEA API owns classification + template choice.
  */
 export async function planWorkflow(opts: PlanOptions): Promise<PlanResult> {
 	const log = opts.onLog ?? (() => {});

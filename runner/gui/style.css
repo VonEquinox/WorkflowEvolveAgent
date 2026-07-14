@@ -118,18 +118,6 @@ textarea, input[type="text"], select {
 }
 textarea:focus, input:focus, select:focus { outline: 1.5px solid var(--running); border-color: transparent; }
 
-.segmented { display: flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
-.seg-btn {
-  flex: 1;
-  padding: 7px 0;
-  background: transparent;
-  color: var(--ink-2);
-  border: 0;
-  font: inherit;
-  cursor: pointer;
-}
-.seg-btn.selected { background: var(--running); color: #fff; font-weight: 600; }
-.seg-btn:disabled { opacity: 0.35; cursor: not-allowed; }
 
 .run-btn {
   width: 100%;

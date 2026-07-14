@@ -24,7 +24,7 @@ challenger **wins a paired comparison** against the current champion.
 - Complex tasks should prefer explore → master-handoff → implement shapes,
   not “dump architecture on the implementer alone.”
 
-Default live path for `--template auto`:
+Default control-assisted path for `--template auto`:
 
 ```
 task + full template catalog
@@ -35,8 +35,8 @@ task + full template catalog
      → each node = pi AgentSession on **default pi model**
 ```
 
-Offline BM25 retrieval is **only** a fallback when `WEA_*` is missing, sim mode,
-or `--offline-plan` — it is **not** the live router.
+Offline BM25 retrieval is **only** a fallback when `WEA_*` is missing or
+`--offline-plan` is set — it is **not** the control-assisted router.
 
 ### Master loops (control plane)
 
@@ -109,7 +109,7 @@ or `--offline-plan` — it is **not** the live router.
 | **Self-computed digests** | Tool results hashed (pi does not provide digests) |
 | **CLI runner** | `run.ts` over shared orchestrator |
 | **Web GUI** | Live DAG + per-agent activity via SSE (`npm run gui`) |
-| **Simulate mode** | Real scheduler + stub nodes; offline demo, no API |
+| **Per-run Git worktree** | Real workers edit an isolated checkout; source is never auto-merged |
 
 ### 1.2 Selection & reuse (L3)
 
@@ -1030,11 +1030,11 @@ chmod +x install.sh
 ./bin/wea doctor
 ./bin/wea templates
 
-# Offline dry-run (no API spend) — still writes a full journal
+# Offline planning only; worker execution is still real pi (no simulation path)
 ./bin/wea run --task "add a health check" \
-  --template t-explore-master-implement --mode sim
+  --template t1-safe-generic --offline-plan
 
-# Live: control = WEA_*, workers = pi default model
+# Control-assisted planning: control = WEA_*, workers = pi default model
 cp .env.example .env   # edit WEA_*
 ./bin/wea run --task "node test.js fails: fix the off-by-one" \
   --template auto --repo /path/to/target-repo --out runs
@@ -1063,7 +1063,7 @@ cp .env.example .env   # edit WEA_*
 cd runner
 npm test          # retrieval / cache / champion
 npm run smoke     # synthetic traces
-npm run gui       # Simulate mode in the browser
+npm run gui       # real pi workers; each run uses an isolated worktree
 ```
 
 ### MCP bridge tests
@@ -1083,13 +1083,13 @@ cd mcp-bridge && npm test && bash scripts/e2e.sh
 **Proven (offline)**  
 - Retrieval routing; fail-closed exact cache; champion promote/reject/inconclusive  
 - MCP bridge against a real filesystem server (hot reuse, RO cache, fail-closed)  
-- GUI Simulate drives the real scheduler  
+- Generation-aware traces, immutable template publication, and isolated-worktree patch review
 
 **Pending (wiring)**  
 - Multi-pair live A/B on a stable endpoint  
 - Exact cache hooked into every spawn path  
 - MCP bridge extension wired into runner node sessions  
-- Worktree write-isolation; stronger per-node budget enforcement  
+- Automated paired live A/B orchestration and champion promotion wiring
 - Fully automatic `run → improve → promote` loop  
 
 ---

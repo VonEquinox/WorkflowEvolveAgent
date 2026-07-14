@@ -4,16 +4,15 @@
  * Serves the static frontend (runner/gui/) and a small JSON+SSE API over the
  * same orchestrator the CLI uses:
  *
- *   GET  /api/health              → { liveAvailable } (env configured?)
+ *   GET  /api/health              → control/worker execution hints
  *   GET  /api/templates           → catalog incl. graph structure (for preview)
- *   POST /api/run                 → { task, template, repo, mode } → { runId }
+ *   POST /api/run                 → { task, template, repo } → { runId }
  *   GET  /api/run/:id/events      → SSE; replays buffered events, then live
  *   GET  /api/run/:id             → snapshot { events } (refresh safety)
  *
- * Binds 127.0.0.1 only. Sim mode works with no endpoint configured — the GUI is
- * fully demonstrable offline. Live mode needs a working default pi model for
- * workers; WEA_* enables control-plane plan/adapt/cold-start (optional — without
- * it live still runs via offline retrieval + pi default model).
+ * Binds 127.0.0.1 only. Runs always use real pi workers in an isolated Git
+ * worktree. WEA_* enables control-plane plan/adapt/cold-start; without it the
+ * runner uses offline retrieval while workers still use the pi default model.
  *
  * Run:  npm run gui   →  http://127.0.0.1:7788
  */
@@ -22,7 +21,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { readFileSync, existsSync } from "node:fs";
 import { dirname, extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
-import { executeRun, resolveTemplateRef, type RunEvent, type RunMode } from "./orchestrator.ts";
+import { executeRun, resolveTemplateRef, type RunEvent } from "./orchestrator.ts";
 import { loadTemplate } from "./library.ts";
 import { loadTemplateCatalog } from "./retrieval.ts";
 import { loadWeaControlConfig } from "./wea-control.ts";
@@ -45,8 +44,8 @@ function controlEnv() {
 	return loadWeaControlConfig();
 }
 
-/** Live workers need a default pi model; we probe by attempting factory later. */
-function liveHint(): { controlAvailable: boolean; note: string } {
+/** Workers need a default pi model; the factory validates it at run start. */
+function executionHint(): { controlAvailable: boolean; note: string } {
 	const c = controlEnv();
 	return {
 		controlAvailable: c !== null,
@@ -109,9 +108,9 @@ const server = createServer(async (req, res) => {
 	const path = url.pathname;
 	try {
 		if (req.method === "GET" && path === "/api/health") {
-			const hint = liveHint();
+			const hint = executionHint();
 			return json(res, 200, {
-				liveAvailable: true, // workers use pi default; always "available" if pi is configured
+				workerMode: "pi-default",
 				controlAvailable: hint.controlAvailable,
 				note: hint.note,
 				port: PORT,
@@ -133,11 +132,12 @@ const server = createServer(async (req, res) => {
 				task?: string;
 				template?: string;
 				repo?: string;
-				mode?: RunMode;
 			};
+			if ("mode" in body) {
+				return json(res, 400, { error: "mode selection has been removed; runs always use real pi workers" });
+			}
 			const task = (body.task ?? "").trim();
 			if (!task) return json(res, 400, { error: "task is required" });
-			const mode: RunMode = body.mode === "live" ? "live" : "sim";
 			const control = controlEnv();
 			const templateRef = body.template?.trim() || "auto";
 			const repo = body.repo?.trim() || process.cwd();
@@ -159,8 +159,7 @@ const server = createServer(async (req, res) => {
 					task,
 					templateRef,
 					repo,
-					out: mode === "live" ? join(HERE, "..", "runs") : undefined,
-					mode,
+					out: join(HERE, "..", "runs"),
 					control,
 					onEvent: (event) => {
 						if (event.type === "run_started") {
@@ -212,7 +211,7 @@ const server = createServer(async (req, res) => {
 });
 
 server.listen(PORT, HOST, () => {
-	const hint = liveHint();
+	const hint = executionHint();
 	console.log(`wea gui →  http://${HOST}:${PORT}`);
 	console.log(`  ${hint.note}`);
 });

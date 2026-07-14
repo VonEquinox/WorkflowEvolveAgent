@@ -16,7 +16,8 @@ npm test        # offline self-test for Phases 3–5 (no network, no API spend)
 npm run smoke   # offline: synthesize a run → emit both trace surfaces
 npm run gui     # web UI at http://127.0.0.1:7788 — see below
 
-# A real run needs an Anthropic-messages endpoint:
+# A run needs a configured pi default worker model. WEA_* is optional and
+# enables control-assisted planning/adaptation; otherwise retrieval is offline.
 export WEA_BASE_URL=... WEA_API_KEY=... WEA_MODEL=...
 npx tsx src/run.ts --task "node test.js fails: ... fix it" \
   --template auto --repo /path/to/target-repo --out runs
@@ -31,11 +32,10 @@ doing right now (tool calls, tokens, cost as they happen), a live activity feed,
 and per-node detail (role, division of labor, recent activity, final JSON
 output). FEEDBACK loops render as dashed return edges.
 
-Two modes: **Simulate** (no endpoint, no spend — the real scheduler drives a
-deterministic stub, so parallelism/loops/progress are fully demonstrable
-offline) and **Live** (real pi sessions; enabled automatically when `WEA_*` env
-is set on the server). The GUI and the CLI drive the same orchestrator
-(`src/orchestrator.ts`), so behavior is identical.
+There is one execution path: real pi AgentSessions in a detached per-run Git
+worktree. The GUI and CLI drive the same orchestrator (`src/orchestrator.ts`).
+`WEA_*` is only for the control plane; when absent, template selection falls
+back to offline retrieval while workers still use the configured pi default.
 
 `--template auto` (the default) lets **retrieval** pick the workflow from the
 task; pass an explicit id (`--template t2-bugfix`) to override. If a family has a
@@ -61,8 +61,9 @@ src/
                    JSON-output parsing)
   library.ts       load library/templates/*.json + library/agents/*.md
   trace-export.ts  RunManifest → dual trace surface (compliance + PVF projection)
-  orchestrator.ts  the execution loop as an event-emitting function (live + sim);
+  orchestrator.ts  the real execution loop as an event-emitting function;
                    both the CLI and the GUI drive it
+  workspace.ts     detached per-run worktree + review patch capture
   run.ts           CLI front over the orchestrator
   gui-server.ts    local web UI server: static + JSON API + SSE event stream
   rebuild.ts       rebuild traces from a manifest offline
@@ -121,6 +122,6 @@ python3 prototypes/attribution.py runs/<run>.pvf.json --pretty
 - Proven offline (`npm test`): retrieval routing, fail-closed exact cache,
   champion promote/reject/rollback — including correctly rejecting a noisy A/B
   as "inconclusive, run more pairs".
-- Pending: multi-pair A/B on the live endpoint (blocked on endpoint stability for
-  multi-node workflows); worktree write-isolation; per-node budget enforcement.
+- Pending: multi-pair A/B on a stable endpoint, exact-cache spawn integration,
+  MCP bridge injection into node sessions, and automated champion promotion.
 ```

@@ -1,16 +1,11 @@
 /**
  * Orchestrator — the runner's execution loop as a reusable, event-emitting
- * function. Both frontends drive it:
- *   - the CLI (run.ts) forwards events to console lines;
- *   - the GUI server (gui-server.ts) forwards events to the browser over SSE.
+ * function. Both frontends drive the same real execution path:
+ *   - the CLI forwards events to console lines;
+ *   - the GUI server forwards events to the browser over SSE.
  *
- * Two modes:
- *   - "live": WEA control plane (WEA_*) plans/adapts the graph; worker nodes
- *     run as pi AgentSessions on the user's **default pi model**;
- *   - "sim":  the SAME GraphScheduler drives the SAME event pipeline, but node
- *     execution is a deterministic no-network stub — so the GUI (and tests) can
- *     exercise scheduling, parallelism, activities and progress with zero spend.
- *     Sim runs write no trace files.
+ * WEA control (when configured) plans/adapts graphs. Every worker node runs as
+ * a pi AgentSession inside a detached per-run Git worktree.
  */
 
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -71,7 +66,6 @@ export type RunEvent =
 			task: string;
 			templateRef: string;
 			templateVersion: string;
-			mode: RunMode;
 			graphGeneration: number;
 			graph: WorkflowGraph;
 			cards: Record<string, { name: string; description: string; tools: string[] }>;
@@ -131,8 +125,6 @@ export type RunEvent =
 	| { type: "log"; message: string }
 	| { type: "run_done"; status: "success" | "failure"; tokens: number; costMicrounits: number; files: string[] };
 
-export type RunMode = "live" | "sim";
-
 export interface ExecuteOptions {
 	task: string;
 	/** template id, versioned ref, or "auto" (control plan: retrieve → adapt / cold-start). */
@@ -142,15 +134,14 @@ export interface ExecuteOptions {
 	repo: string;
 	/** Optional parent directory for detached per-run worktrees. */
 	worktreeBaseDir?: string;
-	/** live mode: where trace files go. */
+	/** Where trace, manifest, patch, and workspace review files go. */
 	out?: string;
 	maxParallel?: number;
-	mode: RunMode;
 	/**
 	 * WEA control-plane credentials (plan / adapt / cold-start).
 	 * Worker nodes do NOT use this — they use the default pi model.
-	 * If omitted in live mode, loaded from WEA_* env; if still missing, auto
-	 * planning falls back to offline retrieval (no adapt/cold-start).
+	 * If omitted, loaded from WEA_* env; if still missing, auto planning falls
+	 * back to offline retrieval (no adapt/cold-start).
 	 */
 	control?: WeaControlConfig | null;
 	/** @deprecated use `control` — accepted for older callers */
@@ -161,14 +152,14 @@ export interface ExecuteOptions {
 	persistPlan?: boolean;
 	/**
 	 * When a worker raises escalate=true, freeze graph, pack context, ask WEA master
-	 * for a new graph and re-run. Live + control only. Default true.
+	 * for a new graph and re-run. Requires control configuration. Default true.
 	 */
 	enableEscalationReplan?: boolean;
 	/** Max master replan rounds per executeRun (default 2). */
 	maxReplans?: number;
 	/**
 	 * After the task ends, WEA master reviews the PROCESS and may write an improved
-	 * challenger template. Live + control only. Default true.
+	 * challenger template. Requires control configuration. Default true.
 	 */
 	enablePostRunImprove?: boolean;
 	/** Persist post-run improve challengers. Default true when improve is enabled. */
@@ -230,98 +221,7 @@ function controlFromOpts(opts: ExecuteOptions): WeaControlConfig | null {
 	return loadWeaControlConfig();
 }
 
-// ---- sim node execution ----------------------------------------------------------
-
-const SIM_SCRIPTS: Record<string, { tool: string; detail: string }[]> = {
-	planner: [
-		{ tool: "ls", detail: "." },
-		{ tool: "grep", detail: "TODO|FIXME" },
-		{ tool: "read", detail: "src/main.ts" },
-	],
-	worker: [
-		{ tool: "read", detail: "src/main.ts" },
-		{ tool: "edit", detail: "src/main.ts" },
-		{ tool: "bash", detail: "npm test" },
-	],
-	verifier: [
-		{ tool: "read", detail: "src/main.ts" },
-		{ tool: "bash", detail: "npm test" },
-	],
-	aggregator: [{ tool: "read", detail: "proposals (upstream)" }],
-};
-
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-/** Deterministic pseudo-random (per node) so sim runs are stable. */
-function seeded(seedText: string): () => number {
-	let s = 0;
-	for (const ch of seedText) s = (s * 31 + ch.charCodeAt(0)) >>> 0;
-	return () => {
-		s = (s * 1664525 + 1013904223) >>> 0;
-		return s / 0xffffffff;
-	};
-}
-
-async function runNodeSim(args: {
-	nodeId: string;
-	attemptNo: number;
-	graphGeneration?: number;
-	kind: NodeRunRecord["kind"];
-	cardName: string;
-	ledger: BudgetLedger;
-	plannedAt: string;
-	readyAt: string;
-	onActivity?: (a: RecorderActivity) => void;
-}): Promise<NodeRunRecord> {
-	const rnd = seeded(`${args.nodeId}#${args.attemptNo}`);
-	const startedAt = new Date().toISOString();
-	const script = SIM_SCRIPTS[args.kind] ?? SIM_SCRIPTS.worker!;
-	let toolCalls = 0;
-	for (const step of script) {
-		await sleep(250 + Math.floor(rnd() * 450));
-		args.onActivity?.({ kind: "tool_call", tool: step.tool, detail: step.detail });
-		await sleep(120 + Math.floor(rnd() * 200));
-		args.onActivity?.({ kind: "tool_result", tool: step.tool, isError: false, chars: 200 + Math.floor(rnd() * 4000) });
-		toolCalls += 1;
-	}
-	await sleep(200 + Math.floor(rnd() * 300));
-	const input = 800 + Math.floor(rnd() * 1200);
-	const output = 200 + Math.floor(rnd() * 400);
-	const costMicrounits = Math.round((input * 2 + output * 10) * 1.0);
-	args.onActivity?.({ kind: "llm", inputTokens: input, outputTokens: output, costMicrounits });
-	args.ledger.charge({ input, output, cachedInput: 0, total: input + output, costMicrounits });
-
-	const out: NodeOutput =
-		args.kind === "verifier"
-			? { summary: `verified ${args.nodeId} (sim)`, verdict: "pass", checks: [{ name: "tests", result: "pass" }] }
-			: { summary: `${args.nodeId} done (sim attempt ${args.attemptNo})` };
-	const endedAt = new Date().toISOString();
-	return {
-		nodeId: args.nodeId,
-		attemptNo: args.attemptNo,
-		graphGeneration: args.graphGeneration ?? 0,
-		agentCard: args.cardName,
-		kind: args.kind,
-		sessionId: `sim-${args.nodeId}-${args.attemptNo}`,
-		systemPromptDigest: "sha256:" + "0".repeat(64),
-		toolCalls: Array.from({ length: toolCalls }, (_, i) => ({ tool: script[i]!.tool, toolCallId: `sim-${i}`, input: {} })),
-		toolResults: [],
-		usage: [{ input, output, cachedInput: 0, total: input + output, costMicrounits }],
-		finalText: JSON.stringify(out),
-		output: out,
-		status: "success",
-		error: null,
-		plannedAt: args.plannedAt,
-		readyAt: args.readyAt,
-		startedAt,
-		endedAt,
-		readSet: [],
-		writeSet: [],
-		observations: [],
-		usedBash: script.some((s) => s.tool === "bash"),
-		redactions: 0,
-	};
-}
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // ---- the loop --------------------------------------------------------------------
 
@@ -380,9 +280,9 @@ export async function executeRun(opts: ExecuteOptions): Promise<ExecuteResult> {
 		family: opts.family,
 		language: opts.language,
 		explicitTemplate: opts.templateRef === "auto" ? undefined : opts.templateRef,
-		control: opts.mode === "live" && !opts.offlinePlan ? control : null,
-		offline: opts.mode === "sim" || opts.offlinePlan === true || !control,
-		persist: opts.persistPlan !== false && opts.mode === "live",
+		control: !opts.offlinePlan ? control : null,
+		offline: opts.offlinePlan === true || !control,
+		persist: opts.persistPlan !== false,
 		onLog: (message) => emit({ type: "log", message }),
 	});
 
@@ -420,7 +320,7 @@ export async function executeRun(opts: ExecuteOptions): Promise<ExecuteResult> {
 		cards = loadAgentCards();
 		for (const n of graph.nodes) {
 			if (!cards.has(n.agentCard)) {
-				throw new Error(`planned graph node ${n.id} needs missing card ${n.agentCard}`);
+				emit({ type: "log", message: `planned graph node ${n.id} references missing card ${n.agentCard}; node will fail closed` });
 			}
 		}
 		emit({ type: "template_resolved", templateRef, why: plan.why, planMode: plan.mode });
@@ -473,33 +373,31 @@ export async function executeRun(opts: ExecuteOptions): Promise<ExecuteResult> {
 	let executionRepo = opts.repo;
 	let isolatedWorkspace: IsolatedWorkspace | null = null;
 	let workspaceError: Error | null = null;
-	if (opts.mode === "live") {
-		try {
-			isolatedWorkspace = prepareIsolatedWorkspace({
-				repo: opts.repo,
-				runId,
-				worktreeBaseDir: opts.worktreeBaseDir,
-			});
-			executionRepo = isolatedWorkspace.cwd;
-			emit({
-				type: "workspace_prepared",
-				sourceRepo: isolatedWorkspace.sourceRepoRoot,
-				worktree: isolatedWorkspace.worktreeRoot,
-				baseCommit: isolatedWorkspace.baseCommit,
-				baselineCommit: isolatedWorkspace.baselineCommit,
-				sourceWasDirty: isolatedWorkspace.sourceWasDirty,
-			});
-		} catch (err) {
-			workspaceError = err as Error;
-			emit({ type: "log", message: `isolated worktree preparation failed: ${workspaceError.message}` });
-		}
+	try {
+		isolatedWorkspace = prepareIsolatedWorkspace({
+			repo: opts.repo,
+			runId,
+			worktreeBaseDir: opts.worktreeBaseDir,
+		});
+		executionRepo = isolatedWorkspace.cwd;
+		emit({
+			type: "workspace_prepared",
+			sourceRepo: isolatedWorkspace.sourceRepoRoot,
+			worktree: isolatedWorkspace.worktreeRoot,
+			baseCommit: isolatedWorkspace.baseCommit,
+			baselineCommit: isolatedWorkspace.baselineCommit,
+			sourceWasDirty: isolatedWorkspace.sourceWasDirty,
+		});
+	} catch (err) {
+		workspaceError = err as Error;
+		emit({ type: "log", message: `isolated worktree preparation failed: ${workspaceError.message}` });
 	}
 
 	const ledger = new BudgetLedger(budget);
 	let factory: PiWorkerFactory | null = null;
 	let factoryError: Error | null = workspaceError;
 	let workerModelLabel: string | undefined;
-	if (opts.mode === "live" && !workspaceError) {
+	if (!workspaceError) {
 		try {
 			factory = new PiWorkerFactory();
 			workerModelLabel = factory.modelLabel;
@@ -510,21 +408,17 @@ export async function executeRun(opts: ExecuteOptions): Promise<ExecuteResult> {
 			emit({ type: "log", message: `worker model unavailable: ${factoryError.message}` });
 		}
 	}
-	if (opts.mode === "live") {
-		if (control) {
-			emit({ type: "log", message: `control model (WEA): ${control.modelId} @ ${control.baseUrl}` });
-		} else {
-			emit({ type: "log", message: "control model (WEA): offline / not configured — retrieval only" });
-		}
+	if (control) {
+		emit({ type: "log", message: `control model (WEA): ${control.modelId} @ ${control.baseUrl}` });
+	} else {
+		emit({ type: "log", message: "control model (WEA): offline / not configured — retrieval only" });
 	}
 	const records: NodeRunRecord[] = [];
 	const escalations: EscalationSignal[] = [];
 	let controlUsageAcc: ControlUsage = { ...(plan.controlUsage ?? { inputTokens: 0, outputTokens: 0 }) };
 	const maxReplans = opts.maxReplans ?? 2;
-	const enableReplan =
-		opts.enableEscalationReplan !== false && opts.mode === "live" && !!control;
-	const enableImprove =
-		opts.enablePostRunImprove !== false && opts.mode === "live" && !!control;
+	const enableReplan = opts.enableEscalationReplan !== false && !!control;
+	const enableImprove = opts.enablePostRunImprove !== false && !!control;
 	let replanCount = 0;
 	/** Bumped on each replan / handoff edit-graph start so records from prior phases stay scoped. */
 	let graphGeneration = 0;
@@ -555,7 +449,6 @@ export async function executeRun(opts: ExecuteOptions): Promise<ExecuteResult> {
 		task: opts.task,
 		templateRef,
 		templateVersion,
-		mode: opts.mode,
 		graphGeneration,
 		graph,
 		cards: cardsPayload(),
@@ -649,103 +542,40 @@ export async function executeRun(opts: ExecuteOptions): Promise<ExecuteResult> {
 					const upstream = upstreamOutputs(nodeId, activeGraph, records);
 					const startedAt = new Date().toISOString();
 
-					if (opts.mode === "sim" || !control) {
-						// Offline stub: synthesize a trivial plan + default edit graph
-						const planText = JSON.stringify(
-							{
-								summary: `sim master plan from ${upstream.map((u) => u.nodeId).join(", ") || "no upstream"}`,
-								steps: ["apply explorer consensus", "implement", "verify"],
-							},
-							null,
-							2,
-						);
-						const { loadTemplate: lt } = await import("./library.ts");
-						let editGraph: WorkflowGraph;
-						try {
-							editGraph = lt("t-implement-verify").graph;
-						} catch {
-							editGraph = {
-								nodes: [
-									{
-										id: "implement",
-										kind: "worker",
-										agentCard: "implementer",
-										trigger: "ALL_SUCCESS",
-										promptTemplate: "${task}\n${master_plan}\n${upstream}",
-									},
-								],
-								edges: [
-									{ id: "e1", from: "@input", to: "implement", kind: "DATA" },
-									{ id: "e2", from: "implement", to: "@output", kind: "DATA" },
-								],
-								loops: [],
-							};
-						}
-						const out: NodeOutput = {
-							summary: "sim master handoff",
-							master_plan: JSON.parse(planText),
-							handoff: true,
+					if (!control) {
+						const card = cards.get(node.agentCard) ?? {
+							name: node.agentCard,
+							description: "WEA control-plane handoff",
+							systemPrompt: "",
 						};
-						const record: NodeRunRecord = {
+						const record = failedNodeRecord({
 							nodeId,
 							attemptNo,
 							graphGeneration,
-							agentCard: "master-handoff",
 							kind: node.kind,
-							sessionId: `handoff-sim-${nodeId}`,
-							systemPromptDigest: "sha256:" + "h".repeat(64),
-							toolCalls: [],
-							toolResults: [],
-							usage: [{ input: 0, output: 0, cachedInput: 0, total: 0, costMicrounits: 0 }],
-							finalText: JSON.stringify(out),
-							output: out,
-							status: "success",
-							error: null,
+							card,
 							plannedAt: rt.plannedAt,
 							readyAt: rt.readyAt ?? rt.plannedAt,
-							startedAt,
-							endedAt: new Date().toISOString(),
-							readSet: [],
-							writeSet: [],
-							observations: [],
-							usedBash: false,
-							redactions: 0,
-						};
+							error: new Error("control configuration is required for a master-handoff node"),
+							code: "CONTROL_UNAVAILABLE",
+						});
 						records.push(record);
 						emit({
 							type: "node_result",
 							nodeId,
 							attemptNo,
 							graphGeneration,
-							status: "success",
-							summary: out.summary,
+							status: record.status,
+							summary: record.error!.message,
 							tokens: 0,
 							costMicrounits: 0,
 							toolCalls: 0,
-							output: out,
-							error: null,
+							output: null,
+							error: `${record.error!.code}: ${record.error!.message}`,
 						});
-						scheduler.reportSuccess(nodeId, out);
+						emit({ type: "master_handoff", nodeId, ok: false, why: record.error!.message });
+						scheduler.reportFailure(nodeId, record.error!.code, record.error!.message);
 						flushSchedulerEvents();
-						pendingHandoff = {
-							ok: true,
-							why: "sim handoff → t-implement-verify",
-							masterPlan: planText,
-							editGraph,
-							baseId: "t-implement-verify",
-							version: "1.0.0",
-							usage: { inputTokens: 0, outputTokens: 0 },
-							output: out,
-						};
-						emit({
-							type: "master_handoff",
-							nodeId,
-							ok: true,
-							why: pendingHandoff.why,
-							masterPlan: planText,
-							editGraph,
-							templateRef: "t-implement-verify",
-						});
 						break;
 					}
 
@@ -837,8 +667,12 @@ export async function executeRun(opts: ExecuteOptions): Promise<ExecuteResult> {
 				}
 
 				// ---- normal pi worker node ------------------------------------------
-				const card = cards.get(node.agentCard);
-				if (!card) throw new Error(`node ${nodeId} references unknown agent card ${node.agentCard}`);
+				const missingCard = !cards.has(node.agentCard);
+				const card = cards.get(node.agentCard) ?? {
+					name: node.agentCard,
+					description: "missing agent card",
+					systemPrompt: "",
+				};
 				scheduler.markRunning(nodeId);
 				flushSchedulerEvents();
 				const onActivity = (a: RecorderActivity) =>
@@ -851,47 +685,50 @@ export async function executeRun(opts: ExecuteOptions): Promise<ExecuteResult> {
 				);
 				emit({ type: "log", message: `▶ ${nodeId} (attempt ${attemptNo}) card=${card.name}` });
 
-				const rawPromise =
-					opts.mode === "sim"
-						? runNodeSim({
+				const rawPromise = missingCard
+					? Promise.resolve(
+							failedNodeRecord({
 								nodeId,
 								attemptNo,
 								graphGeneration,
 								kind: node.kind,
-								cardName: card.name,
-								ledger,
+								card,
 								plannedAt: rt.plannedAt,
 								readyAt: rt.readyAt ?? rt.plannedAt,
-								onActivity,
-							})
-						: factory
-							? runNode({
+								error: new Error(`agent card ${node.agentCard} is not installed`),
+								code: "AGENT_CARD_NOT_FOUND",
+							}),
+						)
+					: factory
+						? runNode({
+							nodeId,
+							attemptNo,
+							kind: node.kind,
+							card,
+							taskPrompt,
+							cwd: executionRepo,
+							repoRoot: executionRepo,
+							factory,
+							ledger,
+							nodeBudget: node.budget,
+							timing: { plannedAt: rt.plannedAt, readyAt: rt.readyAt ?? rt.plannedAt },
+							onActivity,
+						})
+						: Promise.resolve(
+								failedNodeRecord({
 									nodeId,
 									attemptNo,
+									graphGeneration,
 									kind: node.kind,
 									card,
-									taskPrompt,
-									cwd: executionRepo,
-									repoRoot: executionRepo,
-									factory,
-									ledger,
-									nodeBudget: node.budget,
-									timing: { plannedAt: rt.plannedAt, readyAt: rt.readyAt ?? rt.plannedAt },
-									onActivity,
-								})
-							: Promise.resolve(
-									failedNodeRecord({
-										nodeId,
-										attemptNo,
-										graphGeneration,
-										kind: node.kind,
-										card,
-										plannedAt: rt.plannedAt,
-										readyAt: rt.readyAt ?? rt.plannedAt,
-										error: factoryError ?? new Error("worker factory unavailable"),
-										code: "WORKER_FACTORY_ERROR",
-									}),
-								);
+									plannedAt: rt.plannedAt,
+									readyAt: rt.readyAt ?? rt.plannedAt,
+									error: factoryError ?? new Error("worker factory unavailable"),
+									code: "WORKER_FACTORY_ERROR",
+								}),
+							);
+
+
 				const promise = rawPromise
 					.then((r) => ({ ...r, graphGeneration }))
 					.catch((err) =>
@@ -1059,7 +896,7 @@ export async function executeRun(opts: ExecuteOptions): Promise<ExecuteResult> {
 					n.agentCard = "implementer";
 				}
 				if (!cards.has(n.agentCard) && !isControlHandoffNode(n)) {
-					throw new Error(`edit graph node ${n.id} needs missing card ${n.agentCard}`);
+					emit({ type: "log", message: `edit graph node ${n.id} references missing card ${n.agentCard}; node will fail closed` });
 				}
 			}
 			emit({
@@ -1078,8 +915,7 @@ export async function executeRun(opts: ExecuteOptions): Promise<ExecuteResult> {
 				task: opts.task,
 				templateRef,
 				templateVersion,
-				mode: opts.mode,
-				graphGeneration,
+						graphGeneration,
 				graph,
 				cards: cardsPayload(),
 				workerModel: workerModelLabel,
@@ -1136,7 +972,7 @@ export async function executeRun(opts: ExecuteOptions): Promise<ExecuteResult> {
 		cards = loadAgentCards();
 		for (const n of graph.nodes) {
 			if (!cards.has(n.agentCard) && !isControlHandoffNode(n)) {
-				throw new Error(`replan graph node ${n.id} needs missing card ${n.agentCard}`);
+				emit({ type: "log", message: `replan graph node ${n.id} references missing card ${n.agentCard}; node will fail closed` });
 			}
 		}
 		emit({
@@ -1152,8 +988,7 @@ export async function executeRun(opts: ExecuteOptions): Promise<ExecuteResult> {
 			task: opts.task,
 			templateRef,
 			templateVersion,
-			mode: opts.mode,
-			graphGeneration,
+				graphGeneration,
 			graph,
 			cards: cardsPayload(),
 			workerModel: workerModelLabel,
@@ -1271,7 +1106,7 @@ export async function executeRun(opts: ExecuteOptions): Promise<ExecuteResult> {
 		}
 	}
 
-	if (opts.mode === "live" && opts.out && artifactBase) {
+	if (opts.out && artifactBase) {
 		const manifest: RunManifest = {
 			runId,
 			traceId,
