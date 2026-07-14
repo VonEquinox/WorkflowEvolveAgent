@@ -37,3 +37,8 @@ analysis/
 prototypes/
 tools/
 tests/
+
+# not needed to run the pi extension (IR schemas + validator samples + phase0 spike)
+schemas/
+examples/
+spikes/
