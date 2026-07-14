@@ -24,6 +24,13 @@ WEA 把「一次 coding agent 调用」变成一张**可版本化的工作流图
 
 离线 BM25 **只**在没有 `WEA_*`、sim 模式或 `--offline-plan` 时兜底，**不是** live 路由。
 
+### 主 Agent 双回路（控制面）
+
+1. **异常升级 / 重规划** — 图上任意 worker 可在 JSON 里写 `"escalate": true`。
+   WEA 冻结当前图，汇总任务 + 全部节点尝试 + 原因，交给控制模型 **重画一张图** 再跑（默认最多 2 次）。
+2. **跑完后流程优化** — 任务结束后，控制模型审查 *过程*（不只是代码），
+   可写出版本化 challenger：`library/templates/<id>@<ver>.json`。
+
 > **运行时：** pi SDK · Node ≥ 20 · TypeScript  
 > **控制端点：** Anthropic Messages 兼容 API（`WEA_*`）  
 > **工作模型：** 交互式 pi 默认（例如 `kuaipao/grok-4.5`）  

@@ -28,3 +28,14 @@ no markdown fence:
 
 "verdict" MUST be "fail" when any required check fails; then must_fix lists what
 the implementer has to change on the next pass. Never emit anything but the JSON.
+
+ESCALATION — if the defect is not a local code fix but a broken PROCESS (wrong
+workflow topology, missing exploration, impossible acceptance under this graph),
+set instead:
+
+  "verdict": "escalate",
+  "escalate": true,
+  "escalate_reason": "<why the master must replan>",
+  "escalate_context": { ... }
+
+Prefer normal "fail" + must_fix for ordinary fix-loop retries.

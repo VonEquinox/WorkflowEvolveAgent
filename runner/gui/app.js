@@ -199,6 +199,21 @@ function handleEvent(e) {
 			break;
 		}
 
+		case "escalation":
+			feed(e.nodeId, `⚠ escalate: ${e.reason}`, "warn");
+			break;
+		case "master_replan":
+			feed("master", `replan ${e.ok ? "ok" : "fail"}: ${e.why}`, e.ok ? "ok" : "err");
+			if (e.ok && e.graph) {
+				// re-init DAG for the replacement graph
+				initGraph(e.graph, {});
+				renderDag();
+				$("graphTitle").textContent = `${e.templateRef || "replan"} · master replan`;
+			}
+			break;
+		case "master_improve":
+			feed("master", `improve ${e.ok ? "ok" : "fail"} applied=${e.applied}: ${e.why}`, e.ok ? "ok" : "warn");
+			break;
 		case "node_result": {
 			const n = S.nodes.get(e.nodeId);
 			if (!n) break;

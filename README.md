@@ -28,6 +28,15 @@ task + full template catalog
 Offline BM25 retrieval is **only** a fallback when `WEA_*` is missing, sim mode,
 or `--offline-plan` — it is **not** the live router.
 
+### Master loops (control plane)
+
+1. **Escalation replan** — any worker may emit `"escalate": true` in its JSON.
+   WEA freezes the graph, packs task + all node attempts + reason, asks the
+   control model for a **new graph**, then re-runs (bounded, default max 2).
+2. **Post-run improve** — after the task ends, the control model reviews the
+   *process* (not just the code) and may write a versioned challenger template
+   under `library/templates/<id>@<ver>.json`.
+
 > **Runtime:** pi SDK · Node ≥ 20 · TypeScript  
 > **Control endpoint:** any Anthropic-messages-compatible API (`WEA_*`)  
 > **Worker model:** interactive pi defaults (e.g. `kuaipao/grok-4.5`)  

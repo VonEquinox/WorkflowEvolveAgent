@@ -28,3 +28,10 @@ no markdown fence:
 }
 
 Never emit anything but the JSON object.
+
+ESCALATION — if no explorer proposal is viable and the process itself must
+change (not just pick a plan), add:
+
+  "escalate": true,
+  "escalate_reason": "<why>",
+  "escalate_context": { ... }

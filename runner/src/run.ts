@@ -71,6 +71,15 @@ function onEvent(e: RunEvent): void {
 		case "node_result":
 			if (e.status === "success") log(`✔ ${e.nodeId} ok  tokens=${e.tokens} tools=${e.toolCalls}`);
 			break;
+		case "escalation":
+			log(`⚠ ESCALATE ${e.nodeId}: ${e.reason}`);
+			break;
+		case "master_replan":
+			log(`[master-replan] ${e.ok ? "ok" : "fail"} ${e.why}`);
+			break;
+		case "master_improve":
+			log(`[master-improve] ${e.ok ? "ok" : "fail"} applied=${e.applied} ${e.why}`);
+			break;
 		case "log":
 			log(e.message);
 			break;

@@ -19,13 +19,20 @@ import { BudgetLedger } from "./budget.ts";
 import { GraphScheduler } from "./graph.ts";
 import { loadAgentCards, loadTemplate } from "./library.ts";
 import { currentChampion } from "./champion.ts";
+import {
+	detectEscalation,
+	masterImprove,
+	masterReplan,
+	mergeUsage,
+	type EscalationSignal,
+} from "./master-loop.ts";
 import { runNode, PiWorkerFactory, type AgentCard } from "./node-session.ts";
 import { planWorkflow, type PlanResult } from "./plan.ts";
 import type { RecorderActivity } from "./recorder-ext.ts";
 import { retrieve, type TaskCard } from "./retrieval.ts";
 import { buildComplianceTrace, buildPvfTrace, newTraceId, type RunManifest } from "./trace-export.ts";
 import type { NodeOutput, NodeRunRecord, RunBudget, WorkflowGraph } from "./types.ts";
-import { loadWeaControlConfig, type WeaControlConfig } from "./wea-control.ts";
+import { loadWeaControlConfig, type WeaControlConfig, type ControlUsage } from "./wea-control.ts";
 
 // ---- events -------------------------------------------------------------------
 
@@ -47,6 +54,26 @@ export type RunEvent =
 	| { type: "loop"; loopId: string; iteration: number; exhausted: boolean }
 	| { type: "node_activity"; nodeId: string; attemptNo: number; activity: RecorderActivity }
 	| { type: "node_result"; nodeId: string; attemptNo: number; status: string; summary: string; tokens: number; costMicrounits: number; toolCalls: number; output: NodeOutput | null; error: string | null }
+	| {
+			type: "escalation";
+			nodeId: string;
+			reason: string;
+			attemptNo: number;
+	  }
+	| {
+			type: "master_replan";
+			ok: boolean;
+			why: string;
+			graph?: WorkflowGraph;
+			templateRef?: string;
+	  }
+	| {
+			type: "master_improve";
+			ok: boolean;
+			why: string;
+			applied: boolean;
+			writtenPath?: string;
+	  }
 	| { type: "budget"; tokensUsed: number; costMicrounits: number }
 	| { type: "log"; message: string }
 	| { type: "run_done"; status: "success" | "failure"; tokens: number; costMicrounits: number; files: string[] };
@@ -77,6 +104,20 @@ export interface ExecuteOptions {
 	offlinePlan?: boolean;
 	/** Persist adapted / cold-start templates under library/templates. Default true. */
 	persistPlan?: boolean;
+	/**
+	 * When a worker raises escalate=true, freeze graph, pack context, ask WEA master
+	 * for a new graph and re-run. Live + control only. Default true.
+	 */
+	enableEscalationReplan?: boolean;
+	/** Max master replan rounds per executeRun (default 2). */
+	maxReplans?: number;
+	/**
+	 * After the task ends, WEA master reviews the PROCESS and may write an improved
+	 * challenger template. Live + control only. Default true.
+	 */
+	enablePostRunImprove?: boolean;
+	/** Persist post-run improve challengers. Default true when improve is enabled. */
+	persistImprove?: boolean;
 	budget?: RunBudget;
 	onEvent?: (e: RunEvent) => void;
 }
@@ -285,8 +326,6 @@ export async function executeRun(opts: ExecuteOptions): Promise<ExecuteResult> {
 	for (const n of graph.nodes) delete n.model;
 
 	const ledger = new BudgetLedger(budget);
-	const scheduler = new GraphScheduler(graph);
-
 	let factory: PiWorkerFactory | null = null;
 	let workerModelLabel: string | undefined;
 	if (opts.mode === "live") {
@@ -304,6 +343,22 @@ export async function executeRun(opts: ExecuteOptions): Promise<ExecuteResult> {
 	const traceId = newTraceId();
 	const startedAt = new Date().toISOString();
 	const records: NodeRunRecord[] = [];
+	const escalations: EscalationSignal[] = [];
+	let controlUsageAcc: ControlUsage = { ...(plan.controlUsage ?? { inputTokens: 0, outputTokens: 0 }) };
+	const maxReplans = opts.maxReplans ?? 2;
+	const enableReplan =
+		opts.enableEscalationReplan !== false && opts.mode === "live" && !!control;
+	const enableImprove =
+		opts.enablePostRunImprove !== false && opts.mode === "live" && !!control;
+	let replanCount = 0;
+
+	const cardsPayload = () =>
+		Object.fromEntries(
+			[...cards.entries()].map(([name, c]: [string, AgentCard]) => [
+				name,
+				{ name: c.name, description: c.description, tools: c.tools ?? ["(defaults)"] },
+			]),
+		);
 
 	emit({
 		type: "run_started",
@@ -313,142 +368,284 @@ export async function executeRun(opts: ExecuteOptions): Promise<ExecuteResult> {
 		templateVersion,
 		mode: opts.mode,
 		graph,
-		cards: Object.fromEntries(
-			[...cards.entries()].map(([name, c]: [string, AgentCard]) => [
-				name,
-				{ name: c.name, description: c.description, tools: c.tools ?? ["(defaults)"] },
-			]),
-		),
+		cards: cardsPayload(),
 		workerModel: workerModelLabel,
 		controlModel: control?.modelId,
 	});
 
-	scheduler.sealAll();
-	let flushedEvents = 0;
-	const flushSchedulerEvents = () => {
-		for (; flushedEvents < scheduler.events.length; flushedEvents++) {
-			const ev = scheduler.events[flushedEvents]!;
-			if (ev.type === "LOOP_ITERATION" || ev.type === "LOOP_EXHAUSTED") {
-				emit({ type: "loop", loopId: ev.loopId!, iteration: ev.iteration ?? 0, exhausted: ev.type === "LOOP_EXHAUSTED" });
-			} else if (ev.nodeId) {
-				const rt = scheduler.runtime.get(ev.nodeId);
-				emit({
-					type: "node_state",
-					nodeId: ev.nodeId,
-					state: rt?.state ?? "?",
-					attemptNo: rt?.attemptNo ?? 1,
-					detail: ev.detail,
-				});
+	/** Run one sealed graph to completion (or until escalation freezes it). */
+	async function runGraphOnce(activeGraph: WorkflowGraph): Promise<{
+		scheduler: GraphScheduler;
+		escalation: EscalationSignal | null;
+	}> {
+		const scheduler = new GraphScheduler(activeGraph);
+		scheduler.sealAll();
+		let flushedEvents = 0;
+		const flushSchedulerEvents = () => {
+			for (; flushedEvents < scheduler.events.length; flushedEvents++) {
+				const ev = scheduler.events[flushedEvents]!;
+				if (ev.type === "LOOP_ITERATION" || ev.type === "LOOP_EXHAUSTED") {
+					emit({ type: "loop", loopId: ev.loopId!, iteration: ev.iteration ?? 0, exhausted: ev.type === "LOOP_EXHAUSTED" });
+				} else if (ev.nodeId) {
+					const rt = scheduler.runtime.get(ev.nodeId);
+					emit({
+						type: "node_state",
+						nodeId: ev.nodeId,
+						state: rt?.state ?? "?",
+						attemptNo: rt?.attemptNo ?? 1,
+						detail: ev.detail,
+					});
+				}
 			}
-		}
-	};
-	flushSchedulerEvents();
+		};
+		flushSchedulerEvents();
 
-	const inFlight = new Map<string, Promise<NodeRunRecord>>();
-	const retriesUsed = new Map<string, number>();
-	const MAX_NODE_RETRIES = 1;
+		const inFlight = new Map<string, Promise<NodeRunRecord>>();
+		const retriesUsed = new Map<string, number>();
+		const MAX_NODE_RETRIES = 1;
+		let pendingEscalation: EscalationSignal | null = null;
 
-	while (!scheduler.allTerminal()) {
-		for (const nodeId of scheduler.readyNodes()) {
-			if (inFlight.size >= maxParallel) break;
-			if (inFlight.has(nodeId)) continue;
-			if (ledger.exceeded()) {
-				scheduler.reportFailure(nodeId, "BUDGET_EXCEEDED", "run budget exhausted before spawn");
+		while (!scheduler.allTerminal()) {
+			if (pendingEscalation) break;
+
+			for (const nodeId of scheduler.readyNodes()) {
+				if (pendingEscalation) break;
+				if (inFlight.size >= maxParallel) break;
+				if (inFlight.has(nodeId)) continue;
+				if (ledger.exceeded()) {
+					scheduler.reportFailure(nodeId, "BUDGET_EXCEEDED", "run budget exhausted before spawn");
+					flushSchedulerEvents();
+					continue;
+				}
+				const node = scheduler.nodes.get(nodeId)!;
+				const card = cards.get(node.agentCard);
+				if (!card) throw new Error(`node ${nodeId} references unknown agent card ${node.agentCard}`);
+				const rt = scheduler.runtime.get(nodeId)!;
+				const attemptNo = scheduler.attemptNo(nodeId);
+				scheduler.markRunning(nodeId);
 				flushSchedulerEvents();
+				const onActivity = (a: RecorderActivity) => emit({ type: "node_activity", nodeId, attemptNo, activity: a });
+				const taskPrompt = renderPrompt(node.promptTemplate, opts.task, upstreamOutputs(nodeId, activeGraph, records));
+				emit({ type: "log", message: `▶ ${nodeId} (attempt ${attemptNo}) card=${card.name}` });
+
+				const promise =
+					opts.mode === "sim"
+						? runNodeSim({
+								nodeId,
+								attemptNo,
+								kind: node.kind,
+								cardName: card.name,
+								ledger,
+								plannedAt: rt.plannedAt,
+								readyAt: rt.readyAt ?? rt.plannedAt,
+								onActivity,
+							})
+						: runNode({
+								nodeId,
+								attemptNo,
+								kind: node.kind,
+								card,
+								taskPrompt,
+								cwd: opts.repo,
+								repoRoot: opts.repo,
+								factory: factory!,
+								ledger,
+								timing: { plannedAt: rt.plannedAt, readyAt: rt.readyAt ?? rt.plannedAt },
+								onActivity,
+							});
+				inFlight.set(nodeId, promise);
+			}
+
+			if (inFlight.size === 0) {
+				if (pendingEscalation) break;
+				if (scheduler.stalled()) {
+					emit({ type: "log", message: "scheduler stalled with no runnable nodes; stopping" });
+					break;
+				}
+				await sleep(5);
 				continue;
 			}
-			const node = scheduler.nodes.get(nodeId)!;
-			const card = cards.get(node.agentCard);
-			if (!card) throw new Error(`node ${nodeId} references unknown agent card ${node.agentCard}`);
-			const rt = scheduler.runtime.get(nodeId)!;
-			const attemptNo = scheduler.attemptNo(nodeId);
-			scheduler.markRunning(nodeId);
-			flushSchedulerEvents();
-			const onActivity = (a: RecorderActivity) => emit({ type: "node_activity", nodeId, attemptNo, activity: a });
-			const taskPrompt = renderPrompt(node.promptTemplate, opts.task, upstreamOutputs(nodeId, graph, records));
-			emit({ type: "log", message: `▶ ${nodeId} (attempt ${attemptNo}) card=${card.name}` });
 
-			const promise =
-				opts.mode === "sim"
-					? runNodeSim({
-							nodeId,
-							attemptNo,
-							kind: node.kind,
-							cardName: card.name,
-							ledger,
-							plannedAt: rt.plannedAt,
-							readyAt: rt.readyAt ?? rt.plannedAt,
-							onActivity,
-						})
-					: runNode({
-							nodeId,
-							attemptNo,
-							kind: node.kind,
-							card,
-							taskPrompt,
-							cwd: opts.repo,
-							repoRoot: opts.repo,
-							factory: factory!,
-							ledger,
-							timing: { plannedAt: rt.plannedAt, readyAt: rt.readyAt ?? rt.plannedAt },
-							onActivity,
-						});
-			inFlight.set(nodeId, promise);
-		}
+			const [nodeId, record] = await race(inFlight);
+			inFlight.delete(nodeId);
+			records.push(record);
+			const tokens = record.usage.reduce((a, u) => a + u.input + u.output, 0);
+			const cost = record.usage.reduce((a, u) => a + u.costMicrounits, 0);
+			emit({
+				type: "node_result",
+				nodeId,
+				attemptNo: record.attemptNo,
+				status: record.status,
+				summary: record.output?.summary ?? record.error?.message ?? "",
+				tokens,
+				costMicrounits: cost,
+				toolCalls: record.toolCalls.length,
+				output: record.output,
+				error: record.error ? `${record.error.code}: ${record.error.message}` : null,
+			});
+			const snap = ledger.snapshot();
+			emit({ type: "budget", tokensUsed: snap.tokensUsed, costMicrounits: snap.monetaryMicrounitsUsed });
 
-		if (inFlight.size === 0) {
-			if (scheduler.stalled()) {
-				emit({ type: "log", message: "scheduler stalled with no runnable nodes; stopping" });
+			// Master escalate: worker asked the control plane to replan.
+			const esc = detectEscalation(nodeId, record.attemptNo, record.output, record.status);
+			if (esc && enableReplan && replanCount < maxReplans) {
+				pendingEscalation = esc;
+				escalations.push(esc);
+				emit({
+					type: "escalation",
+					nodeId: esc.nodeId,
+					reason: esc.reason,
+					attemptNo: esc.attemptNo,
+				});
+				emit({ type: "log", message: `⚠ escalate from ${esc.nodeId}: ${esc.reason}` });
+				// Mark node failed so the frozen graph is consistent; in-flight siblings finish first.
+				scheduler.reportFailure(nodeId, "ESCALATED", esc.reason);
+				flushSchedulerEvents();
+				// Drain remaining in-flight without starting new work.
+				while (inFlight.size > 0) {
+					const [id2, rec2] = await race(inFlight);
+					inFlight.delete(id2);
+					records.push(rec2);
+					emit({
+						type: "node_result",
+						nodeId: id2,
+						attemptNo: rec2.attemptNo,
+						status: rec2.status,
+						summary: rec2.output?.summary ?? rec2.error?.message ?? "",
+						tokens: rec2.usage.reduce((a, u) => a + u.input + u.output, 0),
+						costMicrounits: rec2.usage.reduce((a, u) => a + u.costMicrounits, 0),
+						toolCalls: rec2.toolCalls.length,
+						output: rec2.output,
+						error: rec2.error ? `${rec2.error.code}: ${rec2.error.message}` : null,
+					});
+					if (rec2.status === "success") scheduler.reportSuccess(id2, rec2.output);
+					else scheduler.reportFailure(id2, rec2.error?.code ?? "UNKNOWN", rec2.error?.message ?? "node failed");
+					flushSchedulerEvents();
+				}
 				break;
 			}
-			await sleep(5);
-			continue;
+
+			if (record.status === "success") {
+				scheduler.reportSuccess(nodeId, record.output);
+			} else {
+				const used = retriesUsed.get(nodeId) ?? 0;
+				if (record.error?.retryable && used < MAX_NODE_RETRIES && !ledger.exceeded()) {
+					retriesUsed.set(nodeId, used + 1);
+					emit({ type: "log", message: `↻ ${nodeId} ${record.error.code}; bounded retry (${used + 1}/${MAX_NODE_RETRIES})` });
+					scheduler.retryNode(nodeId);
+				} else {
+					scheduler.reportFailure(nodeId, record.error?.code ?? "UNKNOWN", record.error?.message ?? "node failed");
+				}
+			}
+			flushSchedulerEvents();
 		}
 
-		const [nodeId, record] = await race(inFlight);
-		inFlight.delete(nodeId);
-		records.push(record);
-		const tokens = record.usage.reduce((a, u) => a + u.input + u.output, 0);
-		const cost = record.usage.reduce((a, u) => a + u.costMicrounits, 0);
-		emit({
-			type: "node_result",
-			nodeId,
-			attemptNo: record.attemptNo,
-			status: record.status,
-			summary: record.output?.summary ?? record.error?.message ?? "",
-			tokens,
-			costMicrounits: cost,
-			toolCalls: record.toolCalls.length,
-			output: record.output,
-			error: record.error ? `${record.error.code}: ${record.error.message}` : null,
-		});
-		const snap = ledger.snapshot();
-		emit({ type: "budget", tokensUsed: snap.tokensUsed, costMicrounits: snap.monetaryMicrounitsUsed });
+		return { scheduler, escalation: pendingEscalation };
+	}
 
-		if (record.status === "success") {
-			scheduler.reportSuccess(nodeId, record.output);
-		} else {
-			const used = retriesUsed.get(nodeId) ?? 0;
-			if (record.error?.retryable && used < MAX_NODE_RETRIES && !ledger.exceeded()) {
-				retriesUsed.set(nodeId, used + 1);
-				emit({ type: "log", message: `↻ ${nodeId} ${record.error.code}; bounded retry (${used + 1}/${MAX_NODE_RETRIES})` });
-				scheduler.retryNode(nodeId);
-			} else {
-				scheduler.reportFailure(nodeId, record.error?.code ?? "UNKNOWN", record.error?.message ?? "node failed");
+	// ---- outer master loop: graph run → (optional) escalate replan → re-run ----
+	let scheduler = new GraphScheduler(graph); // placeholder until first run
+	for (;;) {
+		const once = await runGraphOnce(graph);
+		scheduler = once.scheduler;
+
+		if (!once.escalation || !control || !enableReplan || replanCount >= maxReplans) {
+			break;
+		}
+
+		replanCount += 1;
+		emit({ type: "log", message: `⟳ master replan ${replanCount}/${maxReplans}…` });
+		const replan = await masterReplan({
+			control,
+			task: opts.task,
+			failedGraph: graph,
+			templateRef,
+			records,
+			escalation: once.escalation,
+			persist: opts.persistPlan !== false,
+			onLog: (message) => emit({ type: "log", message }),
+		});
+		controlUsageAcc = mergeUsage(controlUsageAcc, replan.usage);
+		emit({
+			type: "master_replan",
+			ok: replan.ok,
+			why: replan.why,
+			graph: replan.graph,
+			templateRef: replan.baseId,
+		});
+
+		if (!replan.ok || !replan.graph) {
+			emit({ type: "log", message: `master replan failed: ${replan.why}` });
+			break;
+		}
+
+		graph = replan.graph;
+		for (const n of graph.nodes) delete n.model;
+		templateRef = replan.baseId ?? templateRef;
+		templateVersion = replan.version ?? templateVersion;
+		cards = loadAgentCards();
+		for (const n of graph.nodes) {
+			if (!cards.has(n.agentCard)) {
+				throw new Error(`replan graph node ${n.id} needs missing card ${n.agentCard}`);
 			}
 		}
-		flushSchedulerEvents();
+		emit({
+			type: "template_resolved",
+			templateRef,
+			why: replan.why,
+			planMode: "master_replan",
+		});
+		emit({ type: "log", message: `master replan graph ready: ${templateRef} (${graph.nodes.length} nodes) — re-running` });
+		// Fresh run_started so GUI can re-init DAG on the new graph.
+		emit({
+			type: "run_started",
+			runId,
+			task: opts.task,
+			templateRef,
+			templateVersion,
+			mode: opts.mode,
+			graph,
+			cards: cardsPayload(),
+			workerModel: workerModelLabel,
+			controlModel: control?.modelId,
+		});
 	}
 
 	const endedAt = new Date().toISOString();
 	const status = computeRunStatus(records, graph, scheduler.allTerminal());
 
+	// ---- post-run master: process verify + graph improve ----
+	let improveMeta: Awaited<ReturnType<typeof masterImprove>> | undefined;
+	if (enableImprove && control) {
+		improveMeta = await masterImprove({
+			control,
+			task: opts.task,
+			templateRef,
+			templateVersion,
+			graph,
+			status,
+			records,
+			escalations,
+			persist: opts.persistImprove !== false,
+			apply: opts.persistImprove !== false,
+			onLog: (message) => emit({ type: "log", message }),
+		});
+		controlUsageAcc = mergeUsage(controlUsageAcc, improveMeta.usage);
+		emit({
+			type: "master_improve",
+			ok: improveMeta.ok,
+			why: improveMeta.why,
+			applied: improveMeta.applied,
+			writtenPath: improveMeta.writtenPath,
+		});
+	}
+
 	// Charge control-plane tokens into the ledger snapshot display (best-effort).
-	const controlTokens = (plan.controlUsage?.inputTokens ?? 0) + (plan.controlUsage?.outputTokens ?? 0);
+	const controlTokens = controlUsageAcc.inputTokens + controlUsageAcc.outputTokens;
 	if (controlTokens > 0) {
 		ledger.charge({
-			input: plan.controlUsage.inputTokens,
-			output: plan.controlUsage.outputTokens,
+			input: controlUsageAcc.inputTokens,
+			output: controlUsageAcc.outputTokens,
 			cachedInput: 0,
 			total: controlTokens,
 			costMicrounits: 0,
@@ -491,9 +688,19 @@ export async function executeRun(opts: ExecuteOptions): Promise<ExecuteResult> {
 						baseId: plan.baseId,
 						version: plan.version,
 						writtenPath: plan.writtenPath,
-						controlUsage: plan.controlUsage,
+						controlUsage: controlUsageAcc,
 						controlModel: control?.modelId,
 						workerModel: workerModelLabel,
+						replanCount,
+						escalations,
+						improve: improveMeta
+							? {
+									ok: improveMeta.ok,
+									why: improveMeta.why,
+									applied: improveMeta.applied,
+									writtenPath: improveMeta.writtenPath,
+								}
+							: null,
 					},
 				},
 				null,

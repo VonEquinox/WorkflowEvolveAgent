@@ -27,3 +27,12 @@ no markdown fence:
 
 If you could not complete the change, set "files_changed": [] and explain in
 "concerns". Never emit anything but the JSON object.
+
+ESCALATION — when the current workflow plan is wrong (wrong files, missing
+context, impossible under this graph), add to the SAME JSON object:
+
+  "escalate": true,
+  "escalate_reason": "<why the master must replan>",
+  "escalate_context": { ... anything useful for the master ... }
+
+This freezes the graph and hands control to the WEA master agent for a new graph.

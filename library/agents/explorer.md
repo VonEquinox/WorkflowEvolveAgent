@@ -28,3 +28,10 @@ no markdown fence:
 
 "confidence" is your own 0..1 estimate that this approach will succeed. Never
 emit anything but the JSON object.
+
+ESCALATION — if exploration shows the current multi-explorer workflow is the
+wrong shape for the task, add:
+
+  "escalate": true,
+  "escalate_reason": "<why>",
+  "escalate_context": { ... }

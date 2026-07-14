@@ -30,3 +30,12 @@ no markdown fence:
 
 If the task is unclear, still emit the JSON with your best inference and record
 the ambiguity under "risks". Never emit anything but the JSON object.
+
+ESCALATION — if the task cannot be planned under the current workflow (wrong
+scope, missing oracle, needs a totally different topology), add:
+
+  "escalate": true,
+  "escalate_reason": "<why>",
+  "escalate_context": { ... }
+
+The WEA master will replan a new graph from the full run context.
