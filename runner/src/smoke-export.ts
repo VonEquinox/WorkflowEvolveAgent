@@ -33,6 +33,7 @@ function record(
 	return {
 		nodeId,
 		attemptNo,
+		graphGeneration: 0,
 		agentCard: kind,
 		kind,
 		sessionId: `sess-${nodeId}-${attemptNo}`,

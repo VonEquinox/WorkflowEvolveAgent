@@ -240,6 +240,8 @@ export async function runNode(params: RunNodeParams): Promise<NodeRunRecord> {
 	return {
 		nodeId: params.nodeId,
 		attemptNo: params.attemptNo,
+		// Orchestrator stamps the true phase after await; default 0 for standalone callers.
+		graphGeneration: 0,
 		agentCard: card.name,
 		kind: params.kind,
 		sessionId,

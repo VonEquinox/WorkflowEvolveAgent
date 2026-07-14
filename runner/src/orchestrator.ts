@@ -224,6 +224,7 @@ function seeded(seedText: string): () => number {
 async function runNodeSim(args: {
 	nodeId: string;
 	attemptNo: number;
+	graphGeneration?: number;
 	kind: NodeRunRecord["kind"];
 	cardName: string;
 	ledger: BudgetLedger;
@@ -257,6 +258,7 @@ async function runNodeSim(args: {
 	return {
 		nodeId: args.nodeId,
 		attemptNo: args.attemptNo,
+		graphGeneration: args.graphGeneration ?? 0,
 		agentCard: args.cardName,
 		kind: args.kind,
 		sessionId: `sim-${args.nodeId}-${args.attemptNo}`,
@@ -407,6 +409,8 @@ export async function executeRun(opts: ExecuteOptions): Promise<ExecuteResult> {
 	const enableImprove =
 		opts.enablePostRunImprove !== false && opts.mode === "live" && !!control;
 	let replanCount = 0;
+	/** Bumped on each replan / handoff edit-graph start so records from prior phases stay scoped. */
+	let graphGeneration = 0;
 
 	const cardsPayload = () =>
 		Object.fromEntries(
@@ -553,6 +557,7 @@ export async function executeRun(opts: ExecuteOptions): Promise<ExecuteResult> {
 						const record: NodeRunRecord = {
 							nodeId,
 							attemptNo,
+							graphGeneration,
 							agentCard: "master-handoff",
 							kind: node.kind,
 							sessionId: `handoff-sim-${nodeId}`,
@@ -631,6 +636,7 @@ export async function executeRun(opts: ExecuteOptions): Promise<ExecuteResult> {
 					const record: NodeRunRecord = {
 						nodeId,
 						attemptNo,
+						graphGeneration,
 						agentCard: "master-handoff",
 						kind: node.kind,
 						sessionId: `handoff-${nodeId}-${attemptNo}`,
@@ -715,13 +721,14 @@ export async function executeRun(opts: ExecuteOptions): Promise<ExecuteResult> {
 						? runNodeSim({
 								nodeId,
 								attemptNo,
+								graphGeneration,
 								kind: node.kind,
 								cardName: card.name,
 								ledger,
 								plannedAt: rt.plannedAt,
 								readyAt: rt.readyAt ?? rt.plannedAt,
 								onActivity,
-							})
+							}).then((r) => ({ ...r, graphGeneration }))
 						: runNode({
 								nodeId,
 								attemptNo,
@@ -734,7 +741,7 @@ export async function executeRun(opts: ExecuteOptions): Promise<ExecuteResult> {
 								ledger,
 								timing: { plannedAt: rt.plannedAt, readyAt: rt.readyAt ?? rt.plannedAt },
 								onActivity,
-							});
+							}).then((r) => ({ ...r, graphGeneration }));
 				inFlight.set(nodeId, promise);
 			}
 
@@ -770,8 +777,7 @@ export async function executeRun(opts: ExecuteOptions): Promise<ExecuteResult> {
 
 			// Master escalate: worker asked the control plane to replan.
 			const esc = detectEscalation(nodeId, record.attemptNo, record.output, record.status);
-			if (esc && enableReplan && replanCount < maxReplans) {
-				pendingEscalation = esc;
+			if (esc) {
 				escalations.push(esc);
 				emit({
 					type: "escalation",
@@ -780,35 +786,65 @@ export async function executeRun(opts: ExecuteOptions): Promise<ExecuteResult> {
 					attemptNo: esc.attemptNo,
 				});
 				emit({ type: "log", message: `⚠ escalate from ${esc.nodeId}: ${esc.reason}` });
-				// Mark node failed so the frozen graph is consistent; in-flight siblings finish first.
-				scheduler.reportFailure(nodeId, "ESCALATED", esc.reason);
-				flushSchedulerEvents();
-				// Drain remaining in-flight without starting new work.
-				while (inFlight.size > 0) {
-					const [id2, rec2] = await race(inFlight);
-					inFlight.delete(id2);
-					records.push(rec2);
-					emit({
-						type: "node_result",
-						nodeId: id2,
-						attemptNo: rec2.attemptNo,
-						status: rec2.status,
-						summary: rec2.output?.summary ?? rec2.error?.message ?? "",
-						tokens: rec2.usage.reduce((a, u) => a + u.input + u.output, 0),
-						costMicrounits: rec2.usage.reduce((a, u) => a + u.costMicrounits, 0),
-						toolCalls: rec2.toolCalls.length,
-						output: rec2.output,
-						error: rec2.error ? `${rec2.error.code}: ${rec2.error.message}` : null,
-					});
-					if (rec2.status === "success") scheduler.reportSuccess(id2, rec2.output);
-					else scheduler.reportFailure(id2, rec2.error?.code ?? "UNKNOWN", rec2.error?.message ?? "node failed");
+
+				if (enableReplan && replanCount < maxReplans) {
+					// Replan available: freeze graph and hand control to the master loop.
+					pendingEscalation = esc;
+					scheduler.reportFailure(nodeId, "ESCALATED", esc.reason);
 					flushSchedulerEvents();
+					// Drain remaining in-flight without starting new work.
+					while (inFlight.size > 0) {
+						const [id2, rec2] = await race(inFlight);
+						inFlight.delete(id2);
+						records.push(rec2);
+						emit({
+							type: "node_result",
+							nodeId: id2,
+							attemptNo: rec2.attemptNo,
+							status: rec2.status,
+							summary: rec2.output?.summary ?? rec2.error?.message ?? "",
+							tokens: rec2.usage.reduce((a, u) => a + u.input + u.output, 0),
+							costMicrounits: rec2.usage.reduce((a, u) => a + u.costMicrounits, 0),
+							toolCalls: rec2.toolCalls.length,
+							output: rec2.output,
+							error: rec2.error ? `${rec2.error.code}: ${rec2.error.message}` : null,
+						});
+						if (rec2.status === "success") scheduler.reportSuccess(id2, rec2.output);
+						else scheduler.reportFailure(id2, rec2.error?.code ?? "UNKNOWN", rec2.error?.message ?? "node failed");
+						flushSchedulerEvents();
+					}
+					break;
 				}
-				break;
+
+				// Replan disabled or exhausted: terminal-fail the node. Never fall through
+				// to reportSuccess — that would treat an escalate as a successful run.
+				const why =
+					!enableReplan
+						? `escalate requested but replan disabled: ${esc.reason}`
+						: `escalate requested but replan budget exhausted (${replanCount}/${maxReplans}): ${esc.reason}`;
+				emit({ type: "log", message: `✗ escalate terminal-fail ${nodeId}: ${why}` });
+				// Overwrite the in-memory record so computeRunStatus sees a failure even if
+				// the worker's JSON had status:success alongside escalate:true.
+				record.status = "failure";
+				record.error = { code: "ESCALATE_NO_REPLAN", message: why, retryable: false };
+				scheduler.reportFailure(nodeId, "ESCALATE_NO_REPLAN", why);
+				flushSchedulerEvents();
+				continue;
 			}
 
 			if (record.status === "success") {
 				scheduler.reportSuccess(nodeId, record.output);
+				// handleFeedback may flip SUCCEEDED → FAILED on LOOP_EXHAUSTED; mirror that
+				// onto the record so computeRunStatus / @output readiness stay consistent.
+				const rtAfter = scheduler.runtime.get(nodeId);
+				if (rtAfter?.state === "FAILED" && rtAfter.failure) {
+					record.status = "failure";
+					record.error = {
+						code: rtAfter.failure.code,
+						message: rtAfter.failure.message,
+						retryable: false,
+					};
+				}
 			} else {
 				const used = retriesUsed.get(nodeId) ?? 0;
 				if (record.error?.retryable && used < MAX_NODE_RETRIES && !ledger.exceeded()) {
@@ -835,6 +871,7 @@ export async function executeRun(opts: ExecuteOptions): Promise<ExecuteResult> {
 		// (A) Proactive handoff: explorers done → WEA planned → dispatch edit graph
 		if (once.handoff?.ok && once.handoff.editGraph) {
 			masterPlanContext = once.handoff.masterPlan ?? "";
+			graphGeneration += 1;
 			graph = once.handoff.editGraph;
 			for (const n of graph.nodes) delete n.model;
 			templateRef = once.handoff.baseId ?? `${templateRef}+edit`;
@@ -907,6 +944,7 @@ export async function executeRun(opts: ExecuteOptions): Promise<ExecuteResult> {
 			break;
 		}
 
+		graphGeneration += 1;
 		graph = replan.graph;
 		for (const n of graph.nodes) delete n.model;
 		templateRef = replan.baseId ?? templateRef;
@@ -1057,21 +1095,56 @@ export async function executeRun(opts: ExecuteOptions): Promise<ExecuteResult> {
 
 // ---- shared helpers (moved from run.ts) -------------------------------------------
 
+/** Active graph phase = max graphGeneration among records (0 if none). */
+export function activeGraphGeneration(records: NodeRunRecord[]): number {
+	let max = 0;
+	for (const r of records) {
+		const g = r.graphGeneration ?? 0;
+		if (g > max) max = g;
+	}
+	return max;
+}
+
+/** Latest record for nodeId within a single generation (endedAt, then attemptNo). */
+function latestRecordInGeneration(
+	records: NodeRunRecord[],
+	nodeId: string,
+	generation: number,
+	requireSuccess = false,
+): NodeRunRecord | undefined {
+	const candidates = records.filter(
+		(r) =>
+			r.nodeId === nodeId &&
+			(r.graphGeneration ?? 0) === generation &&
+			(!requireSuccess || (r.status === "success" && r.output)),
+	);
+	if (candidates.length === 0) return undefined;
+	return candidates.sort((a, b) => {
+		if (a.endedAt !== b.endedAt) return a.endedAt < b.endedAt ? -1 : 1;
+		return a.attemptNo - b.attemptNo;
+	}).at(-1);
+}
+
 export function upstreamOutputs(nodeId: string, graph: WorkflowGraph, records: NodeRunRecord[]): NodeRunRecord[] {
 	const producers = graph.edges
 		.filter((e) => e.to === nodeId && e.kind !== "FEEDBACK" && e.from !== "@input")
 		.map((e) => e.from);
+	// Scope to the active generation so a reused nodeId from a prior replan/handoff
+	// phase cannot feed a later node with stale output.
+	const gen = activeGraphGeneration(records);
 	const picked: NodeRunRecord[] = [];
 	for (const producer of producers) {
-		const latest = records
-			.filter((r) => r.nodeId === producer && r.status === "success" && r.output)
-			.sort((a, b) => (a.endedAt < b.endedAt ? -1 : 1))
-			.at(-1);
+		const latest = latestRecordInGeneration(records, producer, gen, true);
 		if (latest) picked.push(latest);
 	}
 	return picked;
 }
 
+/**
+ * Single-pass prompt substitution. Values injected for ${task}/${upstream}/
+ * ${master_plan} are never re-scanned, so task text containing literal
+ * `${upstream}` (etc.) cannot re-expand. Unknown ${...} stay literal.
+ */
 export function renderPrompt(
 	template: string,
 	task: string,
@@ -1081,10 +1154,14 @@ export function renderPrompt(
 	const upstreamText = upstream
 		.map((r) => `### From ${r.nodeId}:\n${JSON.stringify(r.output, null, 2)}`)
 		.join("\n\n");
-	return template
-		.replaceAll("${task}", task)
-		.replaceAll("${upstream}", upstreamText || "(no upstream output yet)")
-		.replaceAll("${master_plan}", masterPlan || "(no master plan — follow task + upstream)");
+	const map: Record<string, string> = {
+		task,
+		upstream: upstreamText || "(no upstream output yet)",
+		master_plan: masterPlan || "(no master plan — follow task + upstream)",
+	};
+	return template.replace(/\$\{([a-zA-Z_][a-zA-Z0-9_]*)\}/g, (match, name: string) =>
+		Object.prototype.hasOwnProperty.call(map, name) ? map[name]! : match,
+	);
 }
 
 async function race(inFlight: Map<string, Promise<NodeRunRecord>>): Promise<[string, NodeRunRecord]> {
@@ -1100,11 +1177,10 @@ export function computeRunStatus(
 ): "success" | "failure" {
 	if (!allTerminal) return "failure";
 	const outputNodes = graph.edges.filter((e) => e.to === "@output").map((e) => e.from);
+	// Only consider records from the active (max) generation — never across phases.
+	const gen = activeGraphGeneration(records);
 	for (const nodeId of outputNodes) {
-		const last = records
-			.filter((r) => r.nodeId === nodeId)
-			.sort((a, b) => a.attemptNo - b.attemptNo)
-			.at(-1);
+		const last = latestRecordInGeneration(records, nodeId, gen, false);
 		if (!last || last.status !== "success") return "failure";
 		const verdict = (last.output as Record<string, unknown> | null)?.verdict;
 		if (verdict !== undefined && verdict !== "pass") return "failure";

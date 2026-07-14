@@ -239,7 +239,28 @@ export class GraphScheduler {
 			const loop = this.loops.get(edge.loopId!)!;
 			if (!this.loopRetry(sourceNodeId, output)) continue; // verdict says done
 			if (loop.iteration >= loop.maxIterations) {
+				// Exhausted with a retry still requested: the feedback source must not
+				// remain SUCCEEDED, or allTerminal/@output readiness report a false win.
+				// reportSuccess already set SUCCEEDED + SUCCESS edges; flip to failed.
 				this.record("LOOP_EXHAUSTED", { loopId: loop.id, iteration: loop.iteration });
+				const rt = this.runtime.get(sourceNodeId)!;
+				rt.state = "FAILED";
+				rt.failure = {
+					code: "LOOP_EXHAUSTED",
+					message: `loop ${loop.id} exhausted after ${loop.iteration} iteration(s) with retry still requested`,
+					dependencyFailure: false,
+				};
+				this.record("NODE_FAILED", {
+					nodeId: sourceNodeId,
+					detail: `${rt.failure.code}: ${rt.failure.message}`,
+				});
+				// Re-resolve non-feedback outgoing edges as unsuccessful so @output
+				// and downstream readiness reflect the exhausted failure.
+				for (const out of this.outgoing.get(sourceNodeId) ?? []) {
+					if (out.kind === "FEEDBACK") continue;
+					this.edgeStatus.set(out.id, "DONE_UNSUCCESSFUL");
+					if (out.to !== "@output") this.refreshReadiness(out.to);
+				}
 				continue;
 			}
 			loop.iteration += 1;

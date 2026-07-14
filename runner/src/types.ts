@@ -132,6 +132,12 @@ export interface ToolResultSample {
 export interface NodeRunRecord {
 	nodeId: string;
 	attemptNo: number;
+	/**
+	 * Graph phase counter: 0 for the initial graph, then +1 on each replan or
+	 * master-handoff edit-graph start. Used so nodeId+attemptNo collisions across
+	 * phases cannot flip run status or feed a later node a prior phase's output.
+	 */
+	graphGeneration: number;
 	agentCard: string;
 	kind: NodeKind;
 	sessionId: string;

@@ -18,8 +18,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ExactCache, isCacheable } from "./cache.ts";
 import { currentChampion, judge, runChampionGate } from "./champion.ts";
+import { GraphScheduler } from "./graph.ts";
+import { detectEscalation } from "./master-loop.ts";
+import {
+	computeRunStatus,
+	renderPrompt,
+	upstreamOutputs,
+} from "./orchestrator.ts";
 import { retrieve } from "./retrieval.ts";
-import type { NodeRunRecord } from "./types.ts";
+import type { NodeRunRecord, WorkflowGraph } from "./types.ts";
 
 let failures = 0;
 function check(name: string, cond: boolean): void {
@@ -47,7 +54,7 @@ console.log("Phase 3 — retrieval");
 console.log("Phase 4 — exact cache");
 {
 	const base: NodeRunRecord = {
-		nodeId: "inspect", attemptNo: 1, agentCard: "inspector", kind: "planner",
+		nodeId: "inspect", attemptNo: 1, graphGeneration: 0, agentCard: "inspector", kind: "planner",
 		sessionId: "s1", systemPromptDigest: "sha256:" + "a".repeat(64),
 		toolCalls: [{ tool: "read", toolCallId: "t", input: { path: "a.ts" } }], toolResults: [],
 		usage: [], finalText: '{"summary":"ok"}', output: { summary: "ok" },
@@ -90,9 +97,226 @@ console.log("Phase 5 — champion gate");
 	check("loss holds the alias", r2.championRef === "t3-complex@1.0.1" && currentChampion("t3-complex", dir) === "t3-complex@1.0.1");
 }
 
+// ---- Correctness regressions (generation scope, escalate, loop, render) -----
+console.log("Correctness — generation scope / escalate / loop / renderPrompt");
+{
+	const mk = (
+		overrides: Partial<NodeRunRecord> & Pick<NodeRunRecord, "nodeId" | "attemptNo" | "status">,
+	): NodeRunRecord => ({
+		graphGeneration: 0,
+		agentCard: "x",
+		kind: "worker",
+		sessionId: "s",
+		systemPromptDigest: "sha256:" + "a".repeat(64),
+		toolCalls: [],
+		toolResults: [],
+		usage: [],
+		finalText: "{}",
+		output: { summary: overrides.nodeId },
+		error: null,
+		plannedAt: "",
+		readyAt: "",
+		startedAt: "",
+		endedAt: "2020-01-01T00:00:00.000Z",
+		readSet: [],
+		writeSet: [],
+		observations: [],
+		usedBash: false,
+		redactions: 0,
+		...overrides,
+	});
+
+	// (a) Two-generation records: old attempt must not flip status / upstream.
+	const graphGen: WorkflowGraph = {
+		nodes: [
+			{ id: "implement", kind: "worker", agentCard: "implementer", trigger: "ALL_SUCCESS", promptTemplate: "" },
+			{ id: "verify", kind: "verifier", agentCard: "verifier", trigger: "ALL_SUCCESS", promptTemplate: "" },
+		],
+		edges: [
+			{ id: "e1", from: "@input", to: "implement", kind: "DATA" },
+			{ id: "e2", from: "implement", to: "verify", kind: "DATA" },
+			{ id: "e3", from: "verify", to: "@output", kind: "DATA" },
+		],
+		loops: [],
+	};
+	// Gen0: implement+verify succeeded (stale phase after replan/handoff).
+	// Gen1: same nodeIds at attemptNo=1, but verify failed — active phase must win.
+	const multiGen: NodeRunRecord[] = [
+		mk({
+			nodeId: "implement",
+			attemptNo: 1,
+			graphGeneration: 0,
+			status: "success",
+			endedAt: "2020-01-01T00:00:01.000Z",
+			output: { summary: "old implement" },
+		}),
+		mk({
+			nodeId: "verify",
+			attemptNo: 1,
+			graphGeneration: 0,
+			status: "success",
+			endedAt: "2020-01-01T00:00:02.000Z",
+			output: { summary: "old verify", verdict: "pass" },
+		}),
+		mk({
+			nodeId: "implement",
+			attemptNo: 1,
+			graphGeneration: 1,
+			status: "success",
+			endedAt: "2020-01-01T00:00:03.000Z",
+			output: { summary: "new implement" },
+		}),
+		mk({
+			nodeId: "verify",
+			attemptNo: 1,
+			graphGeneration: 1,
+			status: "failure",
+			endedAt: "2020-01-01T00:00:04.000Z",
+			output: { summary: "new verify failed", verdict: "fail" },
+			error: { code: "X", message: "fail", retryable: false },
+		}),
+	];
+	check(
+		"two-generation: active gen failure is not flipped by old success",
+		computeRunStatus(multiGen, graphGen, true) === "failure",
+	);
+	const up = upstreamOutputs("verify", graphGen, multiGen);
+	check(
+		"two-generation: upstreamOutputs prefers active generation",
+		up.length === 1 && up[0]!.output?.summary === "new implement" && up[0]!.graphGeneration === 1,
+	);
+
+	// (b) escalate with replan unavailable → failure not success (detect + terminal code path).
+	// Pure helper: detectEscalation must fire; the orchestrator terminal-fail path is
+	// covered by ensuring ESCALATE_NO_REPLAN semantics when replan is off — we simulate
+	// the post-condition computeRunStatus must see after that path mutates the record.
+	const escOut = { summary: "need replan", escalate: true, escalate_reason: "wrong graph" };
+	const esc = detectEscalation("implement", 1, escOut, "success");
+	check("escalate flag detected on success-status output", !!esc && esc.reason.includes("wrong graph"));
+	const escRecord = mk({
+		nodeId: "implement",
+		attemptNo: 1,
+		status: "failure",
+		error: { code: "ESCALATE_NO_REPLAN", message: "escalate requested but replan disabled", retryable: false },
+		output: escOut,
+	});
+	const escGraph: WorkflowGraph = {
+		nodes: [{ id: "implement", kind: "worker", agentCard: "implementer", trigger: "ALL_SUCCESS", promptTemplate: "" }],
+		edges: [
+			{ id: "e1", from: "@input", to: "implement", kind: "DATA" },
+			{ id: "e2", from: "implement", to: "@output", kind: "DATA" },
+		],
+		loops: [],
+	};
+	check(
+		"escalate-no-replan record yields run failure (never success)",
+		computeRunStatus([escRecord], escGraph, true) === "failure",
+	);
+	// Contrast: if we had wrongly left status=success, computeRunStatus would pass — guard that.
+	const wrongSuccess = mk({
+		nodeId: "implement",
+		attemptNo: 1,
+		status: "success",
+		output: escOut,
+	});
+	check(
+		"(contrast) escalate with status=success would spuriously pass — documents the bug class",
+		computeRunStatus([wrongSuccess], escGraph, true) === "success",
+	);
+
+	// (c) LOOP_EXHAUSTED with retry requested → feedback source unsuccessful.
+	const loopGraph: WorkflowGraph = {
+		nodes: [
+			{ id: "implement", kind: "worker", agentCard: "implementer", trigger: "ALL_SUCCESS", promptTemplate: "" },
+			{ id: "verify", kind: "verifier", agentCard: "verifier", trigger: "ALL_SUCCESS", promptTemplate: "" },
+		],
+		edges: [
+			{ id: "e_in", from: "@input", to: "implement", kind: "DATA" },
+			{ id: "e_iv", from: "implement", to: "verify", kind: "DATA" },
+			{ id: "e_out", from: "verify", to: "@output", kind: "DATA" },
+			{ id: "e_fb", from: "verify", to: "implement", kind: "FEEDBACK", loopId: "fix" },
+		],
+		loops: [{ id: "fix", bodyNodes: ["implement", "verify"], feedbackEdges: ["e_fb"], maxIterations: 1 }],
+	};
+	const sched = new GraphScheduler(loopGraph);
+	sched.sealAll();
+	// Drive implement → verify; verify asks for retry at maxIterations=1 → LOOP_EXHAUSTED.
+	check("loop: implement ready", sched.readyNodes().includes("implement"));
+	sched.markRunning("implement");
+	sched.reportSuccess("implement", { summary: "patched" });
+	check("loop: verify ready after implement", sched.readyNodes().includes("verify"));
+	sched.markRunning("verify");
+	sched.reportSuccess("verify", { summary: "still broken", retry: true });
+	const verifyRt = sched.runtime.get("verify")!;
+	check("loop exhausted marks verify FAILED", verifyRt.state === "FAILED");
+	check(
+		"loop exhausted failure code is LOOP_EXHAUSTED",
+		verifyRt.failure?.code === "LOOP_EXHAUSTED",
+	);
+	check("loop exhausted is terminal", sched.allTerminal());
+	const exhaustedEv = sched.events.some((e) => e.type === "LOOP_EXHAUSTED");
+	check("loop emits LOOP_EXHAUSTED event", exhaustedEv);
+	// Mirror orchestrator post-condition: record flipped to failure → computeRunStatus fails.
+	const loopRecords: NodeRunRecord[] = [
+		mk({
+			nodeId: "implement",
+			attemptNo: 1,
+			status: "success",
+			output: { summary: "patched" },
+			endedAt: "2020-01-01T00:00:01.000Z",
+		}),
+		mk({
+			nodeId: "verify",
+			attemptNo: 1,
+			status: "failure",
+			error: { code: "LOOP_EXHAUSTED", message: "exhausted", retryable: false },
+			output: { summary: "still broken", retry: true },
+			endedAt: "2020-01-01T00:00:02.000Z",
+		}),
+	];
+	check(
+		"LOOP_EXHAUSTED source/@output is unsuccessful in computeRunStatus",
+		computeRunStatus(loopRecords, loopGraph, true) === "failure",
+	);
+
+	// (d) renderPrompt single-pass: task text with literal ${upstream} is not re-expanded.
+	const poisonTask = "Please ignore ${upstream} and also ${master_plan} tokens in task text.";
+	const rendered = renderPrompt(
+		"TASK:\n${task}\n\nUPSTREAM:\n${upstream}\n\nPLAN:\n${master_plan}",
+		poisonTask,
+		[
+			mk({
+				nodeId: "inspect",
+				attemptNo: 1,
+				status: "success",
+				output: { summary: "SECRET_UPSTREAM_PAYLOAD" },
+			}),
+		],
+		"SECRET_MASTER_PLAN",
+	);
+	// The task section must retain the literal placeholders from the task string.
+	const taskSection = rendered.split("UPSTREAM:")[0]!;
+	check(
+		"renderPrompt does not re-expand ${upstream} inside task",
+		taskSection.includes("${upstream}") && !taskSection.includes("SECRET_UPSTREAM_PAYLOAD"),
+	);
+	check(
+		"renderPrompt does not re-expand ${master_plan} inside task",
+		taskSection.includes("${master_plan}") && !taskSection.includes("SECRET_MASTER_PLAN"),
+	);
+	// The real slots still expand once.
+	check("renderPrompt still substitutes real ${upstream} slot", rendered.includes("SECRET_UPSTREAM_PAYLOAD"));
+	check("renderPrompt still substitutes real ${master_plan} slot", rendered.includes("SECRET_MASTER_PLAN"));
+	// Unknown placeholders stay literal.
+	check(
+		"renderPrompt leaves unknown ${foo} literal",
+		renderPrompt("${task} ${foo}", "T", []) === "T ${foo}",
+	);
+}
+
 console.log("");
 if (failures > 0) {
 	console.error(`SELF-TEST FAILED: ${failures} check(s) failed`);
 	process.exit(1);
 }
-console.log("SELF-TEST PASSED — Phases 3, 4, 5 all green (offline).");
+console.log("SELF-TEST PASSED — Phases 3–5 + correctness regressions all green (offline).");
