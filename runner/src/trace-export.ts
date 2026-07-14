@@ -12,8 +12,8 @@
  *   - LLM nodes are nondeterministic → replay_policy "verify", never "safe";
  *   - Phase 1 has no cache → cache_decision DISABLED/DISABLED (no gate demands);
  *   - budget is a hard validator ceiling: sum(tokens/money) and each attempt's
- *     wall_time must fit. We write max(configured, actual) and log overshoot —
- *     the ledger already aborts sessions, so overshoot is bounded to one call;
+ *     wall_time must fit. We export the configured ceiling exactly so any
+ *     overshoot remains visible instead of being normalized away;
  *   - dependency manifests stay "conservative" in Phase 1 (no sandbox capture;
  *     bash footprints invisible per D10).
  */
@@ -27,6 +27,15 @@ import type { DependencyObservation } from "./recorder-ext.ts";
 import type { SchedulerEvent } from "./graph.ts";
 import type { NodeRunRecord, RunBudget, WorkflowGraph } from "./types.ts";
 
+export interface GraphRevision {
+	generation: number;
+	templateId: string;
+	templateVersion: string;
+	graph: WorkflowGraph;
+	reason: "initial" | "master_handoff" | "master_replan";
+	startedAt: string;
+}
+
 export interface RunManifest {
 	runId: string; // uuid
 	traceId: string; // 32 hex
@@ -34,13 +43,17 @@ export interface RunManifest {
 	templateId: string; // e.g. "t2-bugfix"
 	templateVersion: string; // semver
 	graph: WorkflowGraph;
+	/** Every graph phase that ran; graph remains the final revision for compatibility. */
+	graphRevisions?: GraphRevision[];
 	records: NodeRunRecord[]; // one per attempt, ordered by start time
-	schedulerEvents: SchedulerEvent[];
+	schedulerEvents: Array<SchedulerEvent & { graphGeneration?: number }>;
 	budget: RunBudget;
 	startedAt: string;
 	endedAt: string;
 	status: "success" | "failure" | "cancelled";
 	repoRoot: string;
+	/** Snapshot captured before the first worker changed the isolated workspace. */
+	inputRepoSnapshotDigest?: string;
 	modelId: string;
 	piVersion: string;
 }
@@ -96,7 +109,17 @@ export function repoSnapshotDigest(repoRoot: string): string {
 
 // ---- executed dependency resolution -------------------------------------------
 
-const occId = (r: NodeRunRecord): string => `${r.nodeId}#${r.attemptNo}`;
+const occId = (r: NodeRunRecord): string => `g${r.graphGeneration ?? 0}:${r.nodeId}#${r.attemptNo}`;
+
+function revisionsOf(manifest: RunManifest): GraphRevision[] {
+	return manifest.graphRevisions?.length
+		? manifest.graphRevisions
+		: [{ generation: 0, templateId: manifest.templateId, templateVersion: manifest.templateVersion, graph: manifest.graph, reason: "initial", startedAt: manifest.startedAt }];
+}
+
+function graphForGeneration(manifest: RunManifest, generation: number): WorkflowGraph {
+	return revisionsOf(manifest).find((r) => r.generation === generation)?.graph ?? manifest.graph;
+}
 
 /**
  * For each record, its executed predecessors: for every incoming edge, the
@@ -106,30 +129,29 @@ const occId = (r: NodeRunRecord): string => `${r.nodeId}#${r.attemptNo}`;
  * first attempt, so they bind only from iteration 2 onward).
  */
 export function executedPredecessors(manifest: RunManifest): Map<string, NodeRunRecord[]> {
-	const byNode = new Map<string, NodeRunRecord[]>();
-	for (const r of manifest.records) {
-		const list = byNode.get(r.nodeId) ?? [];
-		list.push(r);
-		byNode.set(r.nodeId, list);
-	}
-	const incoming = new Map<string, string[]>();
-	for (const e of manifest.graph.edges) {
-		if (e.from === "@input" || e.to === "@output") continue;
-		const list = incoming.get(e.to) ?? [];
-		list.push(e.from);
-		incoming.set(e.to, list);
+	const byGenerationAndNode = new Map<string, NodeRunRecord[]>();
+	for (const record of manifest.records) {
+		const key = `${record.graphGeneration ?? 0}:${record.nodeId}`;
+		const list = byGenerationAndNode.get(key) ?? [];
+		list.push(record);
+		byGenerationAndNode.set(key, list);
 	}
 	const result = new Map<string, NodeRunRecord[]>();
-	for (const r of manifest.records) {
+	for (const record of manifest.records) {
+		const generation = record.graphGeneration ?? 0;
+		const graph = graphForGeneration(manifest, generation);
+		const producers = graph.edges
+			.filter((edge) => edge.to === record.nodeId && edge.from !== "@input" && edge.to !== "@output")
+			.map((edge) => edge.from);
 		const preds: NodeRunRecord[] = [];
-		for (const producer of incoming.get(r.nodeId) ?? []) {
-			const candidates = (byNode.get(producer) ?? [])
-				.filter((p) => p.status === "success" && p.endedAt <= r.startedAt)
-				.sort((a, b) => (a.endedAt < b.endedAt ? -1 : 1));
-			const latest = candidates[candidates.length - 1];
+		for (const producer of producers) {
+			const candidates = (byGenerationAndNode.get(`${generation}:${producer}`) ?? [])
+				.filter((p) => p.status === "success" && p.endedAt <= record.startedAt)
+				.sort((a, b) => (a.endedAt < b.endedAt ? -1 : a.endedAt > b.endedAt ? 1 : a.attemptNo - b.attemptNo));
+			const latest = candidates.at(-1);
 			if (latest) preds.push(latest);
 		}
-		result.set(occId(r), preds);
+		result.set(occId(record), preds);
 	}
 	return result;
 }
@@ -171,27 +193,21 @@ export function criticalPath(manifest: RunManifest, preds: Map<string, NodeRunRe
 // ---- wea.trace/v1 --------------------------------------------------------------
 
 export function buildComplianceTrace(manifest: RunManifest): Record<string, unknown> {
-	const graphDigest = digestOf(manifest.graph);
-	const specDigest = digestOf({ template: manifest.templateId, graph: manifest.graph });
+	const graphRevisions = revisionsOf(manifest);
+	const graphDigest = digestOf(graphRevisions);
+	const specDigest = digestOf({ template: manifest.templateId, graphRevisions });
 	const releaseDigest = digestOf({ spec: specDigest, version: manifest.templateVersion });
 	const instanceId = digestOf({ release: releaseDigest, task: manifest.task, runId: manifest.runId });
 	const instanceSpecDigest = digestOf({ instance: instanceId, graph: graphDigest });
 
 	const preds = executedPredecessors(manifest);
 
-	// Budget ceilings must dominate actuals or validate_ir.py rejects the trace.
-	let tokensTotal = 0;
-	let moneyTotal = 0;
-	let maxWall = 1;
-	for (const r of manifest.records) {
-		tokensTotal += r.usage.reduce((a, u) => a + u.input + u.output, 0);
-		moneyTotal += r.usage.reduce((a, u) => a + u.costMicrounits, 0);
-		maxWall = Math.max(maxWall, Math.max(1, Date.parse(r.endedAt) - Date.parse(r.startedAt)));
-	}
+	// Export the configured ceiling exactly. Overshoot must remain visible to
+	// validators/auditors rather than being hidden by inflating the budget.
 	const budget = {
-		wall_time_ms: Math.max(manifest.budget.wallTimeMs, maxWall),
-		model_tokens: Math.max(manifest.budget.modelTokens, tokensTotal),
-		monetary_microunits: Math.max(manifest.budget.monetaryMicrounits, moneyTotal),
+		wall_time_ms: manifest.budget.wallTimeMs,
+		model_tokens: manifest.budget.modelTokens,
+		monetary_microunits: manifest.budget.monetaryMicrounits,
 	};
 
 	const grantedPermissions = {
@@ -258,7 +274,7 @@ export function buildComplianceTrace(manifest: RunManifest): Record<string, unkn
 			runtime_node: {
 				instance_id: instanceId,
 				runtime_node_id: r.nodeId,
-				generation: 0,
+				generation: r.graphGeneration ?? 0,
 				template_node_id: r.nodeId,
 			},
 			attempt_no: r.attemptNo,
@@ -343,7 +359,7 @@ export function buildComplianceTrace(manifest: RunManifest): Record<string, unkn
 			instance_spec_digest: instanceSpecDigest,
 		},
 		root_task_digest: sha256(manifest.task),
-		repo_snapshot_digest: repoSnapshotDigest(manifest.repoRoot),
+		repo_snapshot_digest: manifest.inputRepoSnapshotDigest ?? repoSnapshotDigest(manifest.repoRoot),
 		policy_epoch: 1,
 		security_partition: "hmac-sha256:" + sha256("wea-local-dev").slice("sha256:".length),
 		started_at: manifest.startedAt,
@@ -410,14 +426,14 @@ export function buildPvfTrace(manifest: RunManifest): Record<string, unknown> {
 	// Terminal anchors: outputs feeding @output edges. Utility follows the
 	// verdict when the node emits one (verifier): pass → 1, anything else → 0
 	// (a run that "completed" with verdict fail must not distribute credit).
-	const outputNodes = new Set(
-		manifest.graph.edges.filter((e) => e.to === "@output").map((e) => e.from),
-	);
+	const finalGeneration = Math.max(0, ...manifest.records.map((r) => r.graphGeneration ?? 0));
+	const finalGraph = graphForGeneration(manifest, finalGeneration);
+	const outputNodes = new Set(finalGraph.edges.filter((e) => e.to === "@output").map((e) => e.from));
 	const terminal_anchors: { artifact_id: string; utility: number }[] = [];
 	for (const r of manifest.records) {
-		if (!outputNodes.has(r.nodeId)) continue;
+		if ((r.graphGeneration ?? 0) !== finalGeneration || !outputNodes.has(r.nodeId)) continue;
 		const laterAttempt = manifest.records.some(
-			(o) => o.nodeId === r.nodeId && o.attemptNo > r.attemptNo,
+			(o) => (o.graphGeneration ?? 0) === finalGeneration && o.nodeId === r.nodeId && o.attemptNo > r.attemptNo,
 		);
 		if (laterAttempt || r.status !== "success") continue;
 		const verdict = (r.output as Record<string, unknown> | null)?.verdict;

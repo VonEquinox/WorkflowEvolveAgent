@@ -10,7 +10,6 @@
  *    the template that just ran.
  */
 
-import { writeFileSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -22,6 +21,7 @@ import {
 } from "./template-edit.ts";
 import type { NodeOutput, NodeRunRecord, WorkflowGraph } from "./types.ts";
 import { CONTROL_PLANE_IDENTITY } from "./control-identity.ts";
+import { publishBaseTemplate, publishVersionedTemplate } from "./template-store.ts";
 import {
 	controlComplete,
 	parseJsonObject,
@@ -222,25 +222,27 @@ export async function masterReplan(opts: {
 	}
 
 	const idRaw = String(decision.id ?? "replan").replace(/[^a-zA-Z0-9._-]+/g, "-").toLowerCase();
-	const baseId = idRaw.startsWith("replan") ? idRaw : `replan-${idRaw}`;
-	const version = String(decision.version ?? "1.0.0");
-	const summary = String(decision.summary ?? `Replan after escalate from ${opts.escalation.nodeId}`);
+	let doc: RunnerTemplateDoc = {
+		id: idRaw.startsWith("replan") ? idRaw : `replan-${idRaw}`,
+		version: String(decision.version ?? "1.0.0"),
+		summary: String(decision.summary ?? `Replan after escalate from ${opts.escalation.nodeId}`),
+		graph,
+	};
 
 	let writtenPath: string | undefined;
 	if (opts.persist !== false) {
-		const doc: RunnerTemplateDoc = { id: baseId, version, summary, graph };
-		writtenPath = join(TEMPLATES_DIR, `${baseId}.json`);
-		mkdirSync(dirname(writtenPath), { recursive: true });
-		writeFileSync(writtenPath, JSON.stringify(doc, null, 2) + "\n");
-		log(`[master] wrote replan template ${writtenPath}`);
+		const published = publishBaseTemplate(doc, TEMPLATES_DIR);
+		doc = published.doc;
+		writtenPath = published.path;
+		log(`[master] wrote immutable replan template ${writtenPath}`);
 	}
 
 	return {
 		ok: true,
-		why: `master:replan ${baseId} — ${String(decision.reasoning ?? "").slice(0, 200)}`,
-		graph,
-		baseId,
-		version,
+		why: `master:replan ${doc.id} — ${String(decision.reasoning ?? "").slice(0, 200)}`,
+		graph: doc.graph,
+		baseId: doc.id,
+		version: doc.version,
 		writtenPath,
 		usage,
 		decision,
@@ -361,9 +363,18 @@ export async function masterImprove(opts: {
 	}
 
 	const proposal = parsed as unknown as Proposal;
-	if (!proposal.schema) (proposal as any).schema = "wea.proposal/v2";
-	proposal.target_template = baseId;
-	proposal.target_version = opts.templateVersion;
+	if (
+		proposal.schema !== "wea.proposal/v2" ||
+		proposal.target_template !== baseId ||
+		proposal.target_version !== opts.templateVersion
+	) {
+		return {
+			ok: false,
+			why: `master improve returned stale/invalid proposal target (expected ${baseId}@${opts.templateVersion})`,
+			usage,
+			applied: false,
+		};
+	}
 	if (!Array.isArray(proposal.edits)) proposal.edits = [];
 
 	const processVerdict = String((parsed as any).process_verdict ?? "?");
@@ -407,12 +418,12 @@ export async function masterImprove(opts: {
 		};
 	}
 
-	const next = applyProposal(doc, proposal);
+	let next = applyProposal(doc, proposal);
 	for (const n of next.graph.nodes) delete n.model;
-	const writtenPath = join(TEMPLATES_DIR, `${next.id}@${next.version}.json`);
-	mkdirSync(dirname(writtenPath), { recursive: true });
-	writeFileSync(writtenPath, JSON.stringify(next, null, 2) + "\n");
-	log(`[master] wrote improved challenger ${writtenPath}`);
+	const published = publishVersionedTemplate(next, TEMPLATES_DIR);
+	next = published.doc;
+	const writtenPath = published.path;
+	log(`[master] wrote immutable improved challenger ${writtenPath}`);
 
 	return {
 		ok: true,
@@ -660,11 +671,15 @@ export async function masterHandoff(opts: {
 
 	let writtenPath: string | undefined;
 	if (opts.persist !== false) {
-		const doc: RunnerTemplateDoc = { id: baseId, version, summary, graph: editGraph };
-		writtenPath = join(TEMPLATES_DIR, `${baseId}@${version}.json`);
-		mkdirSync(dirname(writtenPath), { recursive: true });
-		writeFileSync(writtenPath, JSON.stringify(doc, null, 2) + "\n");
-		log(`[master] wrote edit graph ${writtenPath}`);
+		const published = publishVersionedTemplate(
+			{ id: baseId, version, summary, graph: editGraph },
+			TEMPLATES_DIR,
+		);
+		baseId = published.doc.id;
+		version = published.doc.version;
+		editGraph = published.doc.graph;
+		writtenPath = published.path;
+		log(`[master] wrote immutable edit graph ${writtenPath}`);
 	}
 
 	const output: NodeOutput = {

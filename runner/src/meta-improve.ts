@@ -10,7 +10,7 @@
  *       [--out library/templates] [--apply]
  */
 
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CONTROL_PLANE_IDENTITY } from "./control-identity.ts";
@@ -22,6 +22,7 @@ import {
 	type RunnerTemplateDoc,
 } from "./template-edit.ts";
 import { controlComplete, parseJsonObject, requireWeaControlConfig } from "./wea-control.ts";
+import { publishVersionedTemplate } from "./template-store.ts";
 
 interface Args {
 	report: string;
@@ -107,9 +108,13 @@ async function main(): Promise<void> {
 	}
 
 	const proposal = parsed as unknown as Proposal;
-	if (!proposal.schema) (proposal as any).schema = "wea.proposal/v2";
-	if (!proposal.target_template) proposal.target_template = templateDoc.id;
-	if (!proposal.target_version) proposal.target_version = templateDoc.version;
+	if (
+		proposal.schema !== "wea.proposal/v2" ||
+		proposal.target_template !== templateDoc.id ||
+		proposal.target_version !== templateDoc.version
+	) {
+		throw new Error(`proposal must target exactly ${templateDoc.id}@${templateDoc.version}`);
+	}
 	if (!Array.isArray(proposal.edits)) proposal.edits = [];
 
 	console.log("\n=== PROPOSAL ===");
@@ -125,11 +130,11 @@ async function main(): Promise<void> {
 	}
 
 	if (gate.ok && proposal.edits.length > 0 && args.apply) {
-		const next = applyProposal(templateDoc, proposal);
+		let next = applyProposal(templateDoc, proposal);
 		for (const n of next.graph.nodes) delete n.model;
-		const outPath = join(args.out, `${next.id}@${next.version}.json`);
-		writeFileSync(outPath, JSON.stringify(next, null, 2) + "\n");
-		console.log(`\n[meta] challenger written → ${outPath} (v${next.version})`);
+		const published = publishVersionedTemplate(next, args.out);
+		next = published.doc;
+		console.log(`\n[meta] immutable challenger written → ${published.path} (v${next.version})`);
 	} else if (gate.ok && proposal.edits.length === 0) {
 		console.log("\n[meta] proposal is 'no change' — nothing to apply.");
 	} else if (!args.apply && gate.ok) {

@@ -16,7 +16,6 @@
  * Explicit --template <id> skips the control LLM and runs that graph as-is.
  */
 
-import { writeFileSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { RunnerTemplate } from "./library.ts";
@@ -29,6 +28,7 @@ import {
 	type RunnerTemplateDoc,
 } from "./template-edit.ts";
 import type { WorkflowGraph } from "./types.ts";
+import { publishBaseTemplate, publishVersionedTemplate } from "./template-store.ts";
 import { CONTROL_PLANE_IDENTITY } from "./control-identity.ts";
 import {
 	controlComplete,
@@ -203,17 +203,6 @@ function catalogDoc(id: string, catalog: RunnerTemplate[]): RunnerTemplateDoc {
 	return { id: t.id, version: t.version, summary: t.summary, graph: structuredClone(t.graph) };
 }
 
-function materializePath(id: string, version: string, isCold: boolean): string {
-	// cold-start: new base file; adapt: versioned challenger (never clobber catalog bases).
-	const name = isCold ? `${id}.json` : `${id}@${version}.json`;
-	return join(TEMPLATES_DIR, name);
-}
-
-function writeTemplateDoc(doc: RunnerTemplateDoc, path: string): void {
-	mkdirSync(dirname(path), { recursive: true });
-	writeFileSync(path, JSON.stringify(doc, null, 2) + "\n");
-}
-
 /** Full catalog brief for the control LLM (no scores — model judges). */
 function catalogBriefForControl(catalog: RunnerTemplate[]) {
 	return catalog.map((t) => ({
@@ -357,7 +346,9 @@ export async function planWorkflow(opts: PlanOptions): Promise<PlanResult> {
 	if (kind === "adapt") {
 		const proposal = decision as unknown as Proposal;
 		if (proposal.schema !== "wea.proposal/v2") {
-			(proposal as any).schema = "wea.proposal/v2";
+			log(`[plan] adapt proposal has invalid schema ${JSON.stringify(proposal.schema)}; offline fallback`);
+			const fb = planOffline(opts);
+			return { ...fb, controlUsage: usage, why: `${fb.why} (invalid adapt proposal schema)` };
 		}
 		const target = String(proposal.target_template || "");
 		if (!target || !catalog.some((c) => c.id === target)) {
@@ -366,8 +357,18 @@ export async function planWorkflow(opts: PlanOptions): Promise<PlanResult> {
 			return { ...fb, controlUsage: usage, why: `${fb.why} (unknown adapt target)` };
 		}
 		const doc = catalogDoc(target, catalog);
-		proposal.target_template = doc.id;
-		proposal.target_version = doc.version;
+		if (proposal.target_version !== doc.version) {
+			log(`[plan] adapt version mismatch: proposal=${proposal.target_version ?? "(missing)"}, current=${doc.version}; using ${doc.id} unchanged`);
+			return {
+				mode: "use",
+				baseId: doc.id,
+				version: doc.version,
+				why: `control:adapt [${taskKind}] rejected stale target version → use ${doc.id}`,
+				graph: doc.graph,
+				controlUsage: usage,
+				decision,
+			};
+		}
 		if (!Array.isArray(proposal.edits)) proposal.edits = [];
 
 		if (proposal.edits.length === 0) {
@@ -396,14 +397,15 @@ export async function planWorkflow(opts: PlanOptions): Promise<PlanResult> {
 			};
 		}
 
-		const next = applyProposal(doc, proposal);
+		let next = applyProposal(doc, proposal);
 		for (const n of next.graph.nodes) delete n.model;
 
 		let writtenPath: string | undefined;
 		if (opts.persist !== false) {
-			writtenPath = materializePath(next.id, next.version, false);
-			writeTemplateDoc(next, writtenPath);
-			log(`[plan] wrote adapted template ${writtenPath}`);
+			const published = publishVersionedTemplate(next, TEMPLATES_DIR);
+			next = published.doc;
+			writtenPath = published.path;
+			log(`[plan] wrote immutable adapted template ${writtenPath}`);
 		}
 
 		return {
@@ -440,20 +442,21 @@ export async function planWorkflow(opts: PlanOptions): Promise<PlanResult> {
 			return { ...fb, controlUsage: usage, why: `${fb.why} (cold_start not runnable: ${issues[0]})` };
 		}
 
-		const doc: RunnerTemplateDoc = { id, version, summary, graph };
+		let doc: RunnerTemplateDoc = { id, version, summary, graph };
 		let writtenPath: string | undefined;
 		if (opts.persist !== false) {
-			writtenPath = materializePath(id, version, true);
-			writeTemplateDoc(doc, writtenPath);
-			log(`[plan] wrote cold-start template ${writtenPath}`);
+			const published = publishBaseTemplate(doc, TEMPLATES_DIR);
+			doc = published.doc;
+			writtenPath = published.path;
+			log(`[plan] wrote immutable cold-start template ${writtenPath}`);
 		}
 
 		return {
 			mode: "cold_start",
-			baseId: id,
-			version,
-			why: `control:cold_start [${taskKind}] ${id} — ${String(decision.reasoning ?? "").slice(0, 200)}`,
-			graph,
+			baseId: doc.id,
+			version: doc.version,
+			why: `control:cold_start [${taskKind}] ${doc.id} — ${String(decision.reasoning ?? "").slice(0, 200)}`,
+			graph: doc.graph,
 			writtenPath,
 			controlUsage: usage,
 			decision,

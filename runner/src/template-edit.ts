@@ -21,6 +21,7 @@
 
 import type { GraphEdge, NodeKind, WorkflowGraph } from "./types.ts";
 import { validateWorkflowGraph, type GraphValidationOptions } from "./schemas.ts";
+import { bumpPatch } from "./template-store.ts";
 
 export interface RunnerTemplateDoc {
 	id: string;
@@ -177,10 +178,7 @@ export function applyEditsToGraph(graph: WorkflowGraph, edits: TemplateEdit[]): 
 	return { nodes, edges, loops };
 }
 
-export function bumpVersion(version: string): string {
-	const [maj, min, patch] = version.split(".").map((s) => Number(s));
-	return `${maj}.${min}.${(patch ?? 0) + 1}`;
-}
+export const bumpVersion = bumpPatch;
 
 /** Produce the new template doc. Throws only if the result would not execute. */
 export function applyProposal(template: RunnerTemplateDoc, proposal: Proposal): RunnerTemplateDoc {

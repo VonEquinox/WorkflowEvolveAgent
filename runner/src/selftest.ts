@@ -30,6 +30,10 @@ import { retrieve } from "./retrieval.ts";
 import { formatWeaNow, withCurrentTime } from "./time-banner.ts";
 import { captureWorkspaceResult, prepareIsolatedWorkspace, removeIsolatedWorkspace } from "./workspace.ts";
 import { validateAgentOutput, validateWorkflowGraph } from "./schemas.ts";
+import { gateProposal, type RunnerTemplateDoc } from "./template-edit.ts";
+import { publishBaseTemplate, publishVersionedTemplate } from "./template-store.ts";
+import { buildComplianceTrace, buildPvfTrace, newTraceId, type RunManifest } from "./trace-export.ts";
+import { controlComplete, loadWeaControlConfig } from "./wea-control.ts";
 import type { NodeRunRecord, WorkflowGraph } from "./types.ts";
 
 let failures = 0;
@@ -118,9 +122,9 @@ console.log("Correctness — generation scope / escalate / loop / renderPrompt")
 		finalText: "{}",
 		output: { summary: overrides.nodeId },
 		error: null,
-		plannedAt: "",
-		readyAt: "",
-		startedAt: "",
+		plannedAt: "2020-01-01T00:00:00.000Z",
+		readyAt: "2020-01-01T00:00:00.000Z",
+		startedAt: "2020-01-01T00:00:00.000Z",
 		endedAt: "2020-01-01T00:00:00.000Z",
 		readSet: [],
 		writeSet: [],
@@ -358,6 +362,122 @@ console.log("Correctness — generation scope / escalate / loop / renderPrompt")
 		"renderPrompt leaves unknown ${foo} literal",
 		renderPrompt("${task} ${foo}", "T", []) === "T ${foo}",
 	);
+}
+
+// ---- Generation-aware trace -------------------------------------------------
+console.log("Trace — graph revisions / occurrence identity");
+{
+	const graph: WorkflowGraph = {
+		nodes: [{ id: "same", kind: "worker", agentCard: "implementer", trigger: "ALL_SUCCESS", promptTemplate: "test" }],
+		edges: [
+			{ id: "in", from: "@input", to: "same", kind: "DATA" },
+			{ id: "out", from: "same", to: "@output", kind: "DATA" },
+		],
+		loops: [],
+	};
+	const rec = (generation: number, second: number): NodeRunRecord => ({
+		nodeId: "same", attemptNo: 1, graphGeneration: generation, agentCard: "implementer", kind: "worker",
+		sessionId: `s${generation}`, systemPromptDigest: "sha256:" + "a".repeat(64), toolCalls: [], toolResults: [], usage: [],
+		finalText: '{"summary":"ok"}', output: { summary: `g${generation}` }, status: "success", error: null,
+		plannedAt: `2020-01-01T00:00:0${second}.000Z`, readyAt: `2020-01-01T00:00:0${second}.000Z`,
+		startedAt: `2020-01-01T00:00:0${second}.000Z`, endedAt: `2020-01-01T00:00:0${second + 1}.000Z`,
+		readSet: [], writeSet: [], observations: [], usedBash: false, redactions: 0,
+	});
+	const manifest: RunManifest = {
+		runId: "00000000-0000-4000-8000-000000000099", traceId: newTraceId(), task: "trace generations",
+		templateId: "trace-test@1.0.1", templateVersion: "1.0.1", graph,
+		graphRevisions: [
+			{ generation: 0, templateId: "trace-test", templateVersion: "1.0.0", graph, reason: "initial", startedAt: "2020-01-01T00:00:01.000Z" },
+			{ generation: 1, templateId: "trace-test@1.0.1", templateVersion: "1.0.1", graph, reason: "master_replan", startedAt: "2020-01-01T00:00:03.000Z" },
+		],
+		records: [rec(0, 1), rec(1, 3)], schedulerEvents: [],
+		budget: { wallTimeMs: 10_000, modelTokens: 1_000, monetaryMicrounits: 1_000 },
+		startedAt: "2020-01-01T00:00:01.000Z", endedAt: "2020-01-01T00:00:04.000Z", status: "success",
+		repoRoot: process.cwd(), inputRepoSnapshotDigest: "sha256:" + "b".repeat(64), modelId: "test", piVersion: "test",
+	};
+	const pvf = buildPvfTrace(manifest) as any;
+	const ids = pvf.occurrences.map((o: any) => o.id);
+	check("same node/attempt across revisions has unique occurrence ids", ids.join(",") === "g0:same#1,g1:same#1");
+	check("cross-generation records do not become executed predecessors", pvf.occurrence_edges.length === 0);
+	const compliance = buildComplianceTrace(manifest) as any;
+	check("compliance trace carries runtime graph generation", compliance.attempts.map((a: any) => a.runtime_node.generation).join(",") === "0,1");
+	check("manifest retains every graph revision", manifest.graphRevisions?.length === 2);
+}
+
+// ---- Immutable template publication ----------------------------------------
+console.log("Templates — immutable versions / stale target rejection");
+{
+	const graph: WorkflowGraph = {
+		nodes: [{ id: "work", kind: "worker", agentCard: "implementer", trigger: "ALL_SUCCESS", promptTemplate: "old" }],
+		edges: [
+			{ id: "in", from: "@input", to: "work", kind: "DATA" },
+			{ id: "out", from: "work", to: "@output", kind: "DATA" },
+		],
+		loops: [],
+	};
+	const dir = mkdtempSync(join(tmpdir(), "wea-templates-"));
+	const doc: RunnerTemplateDoc = { id: "immutable", version: "1.0.1", summary: "test", graph };
+	const first = publishVersionedTemplate(doc, dir);
+	const firstBytes = readFileSync(first.path, "utf8");
+	const second = publishVersionedTemplate(doc, dir);
+	check("publishing an existing version allocates a new patch version", first.doc.version === "1.0.1" && second.doc.version === "1.0.2");
+	check("existing version file is never overwritten", readFileSync(first.path, "utf8") === firstBytes);
+	const base1 = publishBaseTemplate({ ...doc, id: "new-base", version: "1.0.0" }, dir);
+	const base2 = publishBaseTemplate({ ...doc, id: "new-base", version: "1.0.0" }, dir);
+	check("base template collision allocates a new id", base1.doc.id === "new-base" && base2.doc.id === "new-base-2");
+	const stale = gateProposal(doc, {
+		schema: "wea.proposal/v2", target_template: doc.id, target_version: "1.0.0",
+		edits: [{ op: "edit_prompt", node: "work", new_prompt: "new" }],
+	});
+	check("proposal gate rejects stale target_version", !stale.ok && stale.violations.some((v) => v.includes("not current")));
+}
+
+// ---- Control transport resilience ------------------------------------------
+console.log("Control — timeout / retry / permanent failures");
+{
+	const cfg = loadWeaControlConfig({
+		WEA_BASE_URL: "https://control.invalid", WEA_API_KEY: "secret", WEA_MODEL: "test",
+		WEA_CONTROL_TIMEOUT_MS: "25", WEA_CONTROL_MAX_RETRIES: "1",
+	});
+	check("control env parses timeout and retry settings", cfg?.timeoutMs === 25 && cfg?.maxRetries === 1);
+	const originalFetch = globalThis.fetch;
+	try {
+		let transientCalls = 0;
+		globalThis.fetch = (async () => {
+			transientCalls += 1;
+			if (transientCalls === 1) return new Response('{"error":{"message":"busy"}}', { status: 503 });
+			return new Response('{"content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":2,"output_tokens":1}}', { status: 200 });
+		}) as typeof fetch;
+		const retried = await controlComplete({ baseUrl: "https://control.invalid", apiKey: "secret", modelId: "test", timeoutMs: 100, maxRetries: 1 }, { system: "s", user: "u" });
+		check("control retries transient 5xx and returns successful response", transientCalls === 2 && retried.text === "ok");
+
+		let permanentCalls = 0;
+		globalThis.fetch = (async () => {
+			permanentCalls += 1;
+			return new Response('{"error":{"message":"bad request"}}', { status: 400 });
+		}) as typeof fetch;
+		let permanentMessage = "";
+		try {
+			await controlComplete({ baseUrl: "https://control.invalid", apiKey: "secret", modelId: "test", timeoutMs: 100, maxRetries: 2 }, { system: "s", user: "u" });
+		} catch (err) {
+			permanentMessage = (err as Error).message;
+		}
+		check("control does not retry permanent 4xx", permanentCalls === 1 && permanentMessage.includes("HTTP 400"));
+
+		globalThis.fetch = ((_input: string | URL | Request, init?: RequestInit) =>
+			new Promise<Response>((_resolve, reject) => {
+				init?.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+			})) as typeof fetch;
+		let timeoutMessage = "";
+		try {
+			await controlComplete({ baseUrl: "https://control.invalid", apiKey: "secret", modelId: "test", timeoutMs: 10, maxRetries: 0 }, { system: "s", user: "u" });
+		} catch (err) {
+			timeoutMessage = (err as Error).message;
+		}
+		check("control aborts an attempt at its deadline", timeoutMessage.includes("timed out after 10ms"));
+	} finally {
+		globalThis.fetch = originalFetch;
+	}
 }
 
 // ---- Worktree isolation -----------------------------------------------------

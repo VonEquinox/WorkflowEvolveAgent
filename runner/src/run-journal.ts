@@ -151,7 +151,7 @@ export class RunJournal {
 				}
 				this.graphs.push({ phase: e.templateRef, graph: e.graph, at: new Date().toISOString() });
 				this.log(
-					`sealed ${e.graph.nodes.length} nodes; starting (${e.mode}) template=${e.templateRef}`,
+					`sealed generation ${e.graphGeneration} with ${e.graph.nodes.length} nodes; starting (${e.mode}) template=${e.templateRef}`,
 				);
 				if (e.workerModel) this.log(`workers: ${e.workerModel}`);
 				if (e.controlModel) this.log(`control: ${e.controlModel}`);
@@ -162,6 +162,7 @@ export class RunJournal {
 					runId: e.runId,
 					templateRef: e.templateRef,
 					templateVersion: e.templateVersion,
+					graphGeneration: e.graphGeneration,
 					nodeIds: e.graph.nodes.map((n) => n.id),
 					edgeIds: e.graph.edges.map((x) => x.id),
 					workerModel: e.workerModel,
@@ -184,6 +185,7 @@ export class RunJournal {
 					type: "activity",
 					nodeId: e.nodeId,
 					attemptNo: e.attemptNo,
+					graphGeneration: e.graphGeneration,
 					activity: e.activity,
 				});
 				break;
@@ -193,7 +195,8 @@ export class RunJournal {
 				this.log(
 					`${mark} ${e.nodeId} ${e.status}  tokens=${e.tokens} tools=${e.toolCalls}  ${e.summary.slice(0, 120)}`,
 				);
-				this.writeJson(`nodes/${safe(e.nodeId)}.attempt-${e.attemptNo}.json`, {
+				this.writeJson(`nodes/g${e.graphGeneration}.${safe(e.nodeId)}.attempt-${e.attemptNo}.json`, {
+					graphGeneration: e.graphGeneration,
 					nodeId: e.nodeId,
 					attemptNo: e.attemptNo,
 					status: e.status,

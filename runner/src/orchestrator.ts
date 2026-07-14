@@ -32,7 +32,14 @@ import { runNode, PiWorkerFactory, type AgentCard } from "./node-session.ts";
 import { planWorkflow, type PlanResult } from "./plan.ts";
 import { sha256, type RecorderActivity } from "./recorder-ext.ts";
 import { retrieve, type TaskCard } from "./retrieval.ts";
-import { buildComplianceTrace, buildPvfTrace, newTraceId, type RunManifest } from "./trace-export.ts";
+import {
+	buildComplianceTrace,
+	buildPvfTrace,
+	newTraceId,
+	repoSnapshotDigest,
+	type GraphRevision,
+	type RunManifest,
+} from "./trace-export.ts";
 import type { NodeOutput, NodeRunRecord, RunBudget, WorkflowGraph } from "./types.ts";
 import { loadWeaControlConfig, type WeaControlConfig, type ControlUsage } from "./wea-control.ts";
 import {
@@ -65,15 +72,16 @@ export type RunEvent =
 			templateRef: string;
 			templateVersion: string;
 			mode: RunMode;
+			graphGeneration: number;
 			graph: WorkflowGraph;
 			cards: Record<string, { name: string; description: string; tools: string[] }>;
 			workerModel?: string;
 			controlModel?: string;
 	  }
-	| { type: "node_state"; nodeId: string; state: string; attemptNo: number; detail?: string }
+	| { type: "node_state"; nodeId: string; state: string; attemptNo: number; graphGeneration: number; detail?: string }
 	| { type: "loop"; loopId: string; iteration: number; exhausted: boolean }
-	| { type: "node_activity"; nodeId: string; attemptNo: number; activity: RecorderActivity }
-	| { type: "node_result"; nodeId: string; attemptNo: number; status: string; summary: string; tokens: number; costMicrounits: number; toolCalls: number; output: NodeOutput | null; error: string | null }
+	| { type: "node_activity"; nodeId: string; attemptNo: number; graphGeneration: number; activity: RecorderActivity }
+	| { type: "node_result"; nodeId: string; attemptNo: number; graphGeneration: number; status: string; summary: string; tokens: number; costMicrounits: number; toolCalls: number; output: NodeOutput | null; error: string | null }
 	| {
 			type: "escalation";
 			nodeId: string;
@@ -520,6 +528,18 @@ export async function executeRun(opts: ExecuteOptions): Promise<ExecuteResult> {
 	let replanCount = 0;
 	/** Bumped on each replan / handoff edit-graph start so records from prior phases stay scoped. */
 	let graphGeneration = 0;
+	const graphRevisions: GraphRevision[] = [
+		{
+			generation: 0,
+			templateId: templateRef,
+			templateVersion,
+			graph: structuredClone(graph),
+			reason: "initial",
+			startedAt,
+		},
+	];
+	const allSchedulerEvents: Array<import("./graph.ts").SchedulerEvent & { graphGeneration: number }> = [];
+	const inputRepoSnapshotDigest = repoSnapshotDigest(executionRepo);
 
 	const cardsPayload = () =>
 		Object.fromEntries(
@@ -536,6 +556,7 @@ export async function executeRun(opts: ExecuteOptions): Promise<ExecuteResult> {
 		templateRef,
 		templateVersion,
 		mode: opts.mode,
+		graphGeneration,
 		graph,
 		cards: cardsPayload(),
 		workerModel: workerModelLabel,
@@ -566,6 +587,7 @@ export async function executeRun(opts: ExecuteOptions): Promise<ExecuteResult> {
 						nodeId: ev.nodeId,
 						state: rt?.state ?? "?",
 						attemptNo: rt?.attemptNo ?? 1,
+						graphGeneration,
 						detail: ev.detail,
 					});
 				}
@@ -610,6 +632,7 @@ export async function executeRun(opts: ExecuteOptions): Promise<ExecuteResult> {
 							type: "node_result",
 							nodeId: id2,
 							attemptNo: rec2.attemptNo,
+							graphGeneration,
 							status: rec2.status,
 							summary: rec2.output?.summary ?? rec2.error?.message ?? "",
 							tokens: rec2.usage.reduce((a, u) => a + u.input + u.output, 0),
@@ -693,6 +716,7 @@ export async function executeRun(opts: ExecuteOptions): Promise<ExecuteResult> {
 							type: "node_result",
 							nodeId,
 							attemptNo,
+							graphGeneration,
 							status: "success",
 							summary: out.summary,
 							tokens: 0,
@@ -782,6 +806,7 @@ export async function executeRun(opts: ExecuteOptions): Promise<ExecuteResult> {
 						type: "node_result",
 						nodeId,
 						attemptNo,
+						graphGeneration,
 						status: record.status,
 						summary: out.summary ?? handoff.why,
 						tokens: handoff.usage.inputTokens + handoff.usage.outputTokens,
@@ -816,7 +841,8 @@ export async function executeRun(opts: ExecuteOptions): Promise<ExecuteResult> {
 				if (!card) throw new Error(`node ${nodeId} references unknown agent card ${node.agentCard}`);
 				scheduler.markRunning(nodeId);
 				flushSchedulerEvents();
-				const onActivity = (a: RecorderActivity) => emit({ type: "node_activity", nodeId, attemptNo, activity: a });
+				const onActivity = (a: RecorderActivity) =>
+					emit({ type: "node_activity", nodeId, attemptNo, graphGeneration, activity: a });
 				const taskPrompt = renderPrompt(
 					node.promptTemplate,
 					opts.task,
@@ -902,6 +928,7 @@ export async function executeRun(opts: ExecuteOptions): Promise<ExecuteResult> {
 				type: "node_result",
 				nodeId,
 				attemptNo: record.attemptNo,
+				graphGeneration,
 				status: record.status,
 				summary: record.output?.summary ?? record.error?.message ?? "",
 				tokens,
@@ -939,6 +966,7 @@ export async function executeRun(opts: ExecuteOptions): Promise<ExecuteResult> {
 							type: "node_result",
 							nodeId: id2,
 							attemptNo: rec2.attemptNo,
+							graphGeneration,
 							status: rec2.status,
 							summary: rec2.output?.summary ?? rec2.error?.message ?? "",
 							tokens: rec2.usage.reduce((a, u) => a + u.input + u.output, 0),
@@ -1005,6 +1033,7 @@ export async function executeRun(opts: ExecuteOptions): Promise<ExecuteResult> {
 	for (;;) {
 		const once = await runGraphOnce(graph);
 		scheduler = once.scheduler;
+		allSchedulerEvents.push(...once.scheduler.events.map((event) => ({ ...event, graphGeneration })));
 
 		// (A) Proactive handoff: explorers done → WEA planned → dispatch edit graph
 		if (once.handoff?.ok && once.handoff.editGraph) {
@@ -1014,6 +1043,14 @@ export async function executeRun(opts: ExecuteOptions): Promise<ExecuteResult> {
 			for (const n of graph.nodes) delete n.model;
 			templateRef = once.handoff.baseId ?? `${templateRef}+edit`;
 			templateVersion = once.handoff.version ?? templateVersion;
+			graphRevisions.push({
+				generation: graphGeneration,
+				templateId: templateRef,
+				templateVersion,
+				graph: structuredClone(graph),
+				reason: "master_handoff",
+				startedAt: new Date().toISOString(),
+			});
 			cards = loadAgentCards();
 			for (const n of graph.nodes) {
 				if (isControlHandoffNode(n)) {
@@ -1042,6 +1079,7 @@ export async function executeRun(opts: ExecuteOptions): Promise<ExecuteResult> {
 				templateRef,
 				templateVersion,
 				mode: opts.mode,
+				graphGeneration,
 				graph,
 				cards: cardsPayload(),
 				workerModel: workerModelLabel,
@@ -1087,6 +1125,14 @@ export async function executeRun(opts: ExecuteOptions): Promise<ExecuteResult> {
 		for (const n of graph.nodes) delete n.model;
 		templateRef = replan.baseId ?? templateRef;
 		templateVersion = replan.version ?? templateVersion;
+		graphRevisions.push({
+			generation: graphGeneration,
+			templateId: templateRef,
+			templateVersion,
+			graph: structuredClone(graph),
+			reason: "master_replan",
+			startedAt: new Date().toISOString(),
+		});
 		cards = loadAgentCards();
 		for (const n of graph.nodes) {
 			if (!cards.has(n.agentCard) && !isControlHandoffNode(n)) {
@@ -1107,6 +1153,7 @@ export async function executeRun(opts: ExecuteOptions): Promise<ExecuteResult> {
 			templateRef,
 			templateVersion,
 			mode: opts.mode,
+			graphGeneration,
 			graph,
 			cards: cardsPayload(),
 			workerModel: workerModelLabel,
@@ -1166,7 +1213,7 @@ export async function executeRun(opts: ExecuteOptions): Promise<ExecuteResult> {
 	const snapFinal = ledger.snapshot();
 
 	const files: string[] = [];
-	const finalGeneration = activeGraphGeneration(records);
+	const finalGeneration = graphGeneration;
 	const terminalNodeIds = graph.edges.filter((e) => e.to === "@output").map((e) => e.from);
 	const terminalRecords = terminalNodeIds
 		.map((id) => latestRecordInGeneration(records, id, finalGeneration, false))
@@ -1232,13 +1279,15 @@ export async function executeRun(opts: ExecuteOptions): Promise<ExecuteResult> {
 			templateId: templateRef,
 			templateVersion,
 			graph,
+			graphRevisions,
 			records,
-			schedulerEvents: scheduler.events,
+			schedulerEvents: allSchedulerEvents,
 			budget,
 			startedAt,
 			endedAt,
 			status,
 			repoRoot: executionRepo,
+			inputRepoSnapshotDigest,
 			modelId: workerModelLabel ?? control?.modelId ?? "pi-default",
 			piVersion: "0.80.6",
 		};
