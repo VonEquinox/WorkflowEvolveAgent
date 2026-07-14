@@ -309,6 +309,18 @@ export class RunJournal {
 				});
 				break;
 
+			case "workspace_prepared":
+				this.log(`[workspace] isolated worktree ${e.worktree}`);
+				this.log(`[workspace] baseline ${e.baselineCommit}${e.sourceWasDirty ? " (includes source dirty state)" : ""}`);
+				this.writeJson("workspace.prepared.json", e);
+				break;
+
+			case "workspace_result":
+				this.log(`[workspace] ${e.changedFiles.length} changed file(s); ${e.note}`);
+				if (e.patchPath) this.log(`[workspace] patch ${e.patchPath}`);
+				this.writeJson("workspace.result.json", e);
+				break;
+
 			case "budget":
 				this.append({ type: "budget", tokensUsed: e.tokensUsed, costMicrounits: e.costMicrounits });
 				break;
@@ -410,6 +422,7 @@ export class RunJournal {
 			`- \`graphs/\` — graph snapshots`,
 			`- \`nodes/\` — per-node outputs`,
 			`- \`handoff.*.json\` / \`replan.*.json\` / \`improve.json\``,
+			`- \`workspace.*.json\` — isolated worktree and review-only patch metadata`,
 			``,
 			`## Orchestrator files`,
 			...e.files.map((f) => `- \`${f}\``),

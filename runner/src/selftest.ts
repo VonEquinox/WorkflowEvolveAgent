@@ -13,7 +13,8 @@
  *                        moves on a win and holds on a loss.
  */
 
-import { mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ExactCache, isCacheable } from "./cache.ts";
@@ -27,6 +28,7 @@ import {
 } from "./orchestrator.ts";
 import { retrieve } from "./retrieval.ts";
 import { formatWeaNow, withCurrentTime } from "./time-banner.ts";
+import { captureWorkspaceResult, prepareIsolatedWorkspace, removeIsolatedWorkspace } from "./workspace.ts";
 import { validateAgentOutput, validateWorkflowGraph } from "./schemas.ts";
 import type { NodeRunRecord, WorkflowGraph } from "./types.ts";
 
@@ -356,6 +358,32 @@ console.log("Correctness — generation scope / escalate / loop / renderPrompt")
 		"renderPrompt leaves unknown ${foo} literal",
 		renderPrompt("${task} ${foo}", "T", []) === "T ${foo}",
 	);
+}
+
+// ---- Worktree isolation -----------------------------------------------------
+console.log("Worktree isolation — source snapshot / review patch");
+{
+	const source = mkdtempSync(join(tmpdir(), "wea-source-"));
+	execFileSync("git", ["init", "-q"], { cwd: source });
+	execFileSync("git", ["config", "user.name", "WEA Test"], { cwd: source });
+	execFileSync("git", ["config", "user.email", "wea@test.local"], { cwd: source });
+	writeFileSync(join(source, "a.txt"), "base\n");
+	execFileSync("git", ["add", "a.txt"], { cwd: source });
+	execFileSync("git", ["commit", "-qm", "base"], { cwd: source });
+	writeFileSync(join(source, "a.txt"), "user-dirty-baseline\n");
+	writeFileSync(join(source, "untracked.txt"), "keep me\n");
+	const worktreeBase = mkdtempSync(join(tmpdir(), "wea-worktrees-"));
+	const workspace = prepareIsolatedWorkspace({ repo: source, runId: "selftest", worktreeBaseDir: worktreeBase });
+	check("isolated baseline includes source dirty tracked content", readFileSync(join(workspace.cwd, "a.txt"), "utf8") === "user-dirty-baseline\n");
+	check("isolated baseline includes source untracked files", existsSync(join(workspace.cwd, "untracked.txt")));
+	writeFileSync(join(workspace.cwd, "a.txt"), "agent-change\n");
+	writeFileSync(join(workspace.cwd, "new-by-agent.txt"), "new\n");
+	const result = captureWorkspaceResult(workspace);
+	check("workspace patch contains only post-baseline agent change", result.patch.includes("agent-change") && result.patch.includes("user-dirty-baseline"));
+	check("workspace result includes newly created file", result.changedFiles.includes("new-by-agent.txt"));
+	check("source checkout remains untouched by agent change", readFileSync(join(source, "a.txt"), "utf8") === "user-dirty-baseline\n");
+	removeIsolatedWorkspace(workspace);
+	check("isolated worktree can be explicitly removed", !existsSync(workspace.worktreeRoot));
 }
 
 // ---- Time banner (wall-clock awareness) ------------------------------------

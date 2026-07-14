@@ -35,6 +35,12 @@ import { retrieve, type TaskCard } from "./retrieval.ts";
 import { buildComplianceTrace, buildPvfTrace, newTraceId, type RunManifest } from "./trace-export.ts";
 import type { NodeOutput, NodeRunRecord, RunBudget, WorkflowGraph } from "./types.ts";
 import { loadWeaControlConfig, type WeaControlConfig, type ControlUsage } from "./wea-control.ts";
+import {
+	captureWorkspaceResult,
+	prepareIsolatedWorkspace,
+	type IsolatedWorkspace,
+	type WorkspaceResult,
+} from "./workspace.ts";
 
 // ---- events -------------------------------------------------------------------
 
@@ -97,6 +103,22 @@ export type RunEvent =
 			applied: boolean;
 			writtenPath?: string;
 	  }
+	| {
+			type: "workspace_prepared";
+			sourceRepo: string;
+			worktree: string;
+			baseCommit: string;
+			baselineCommit: string;
+			sourceWasDirty: boolean;
+	  }
+	| {
+			type: "workspace_result";
+			worktree: string;
+			changedFiles: string[];
+			patchPath?: string;
+			verification: NodeOutput | null;
+			note: string;
+	  }
 	| { type: "budget"; tokensUsed: number; costMicrounits: number }
 	| { type: "log"; message: string }
 	| { type: "run_done"; status: "success" | "failure"; tokens: number; costMicrounits: number; files: string[] };
@@ -110,6 +132,8 @@ export interface ExecuteOptions {
 	family?: string;
 	language?: string;
 	repo: string;
+	/** Optional parent directory for detached per-run worktrees. */
+	worktreeBaseDir?: string;
 	/** live mode: where trace files go. */
 	out?: string;
 	maxParallel?: number;
@@ -151,9 +175,18 @@ export interface ExecuteResult {
 	templateRef: string;
 	tokens: number;
 	costMicrounits: number;
-	/** written trace files (live mode only). */
+	/** written trace/diff files. */
 	files: string[];
 	plan?: PlanResult;
+	finalOutput?: NodeOutput | null;
+	workspace?: {
+		sourceRepo: string;
+		worktree: string;
+		baselineCommit: string;
+		changedFiles: string[];
+		patchPath?: string;
+		verification: NodeOutput | null;
+	};
 }
 
 const DEFAULT_BUDGET: RunBudget = {
@@ -426,11 +459,39 @@ export async function executeRun(opts: ExecuteOptions): Promise<ExecuteResult> {
 	// Workers never inherit control-plane model ids from graph nodes.
 	for (const n of graph.nodes) delete n.model;
 
+	const runId = crypto.randomUUID();
+	const traceId = newTraceId();
+	const startedAt = new Date().toISOString();
+	let executionRepo = opts.repo;
+	let isolatedWorkspace: IsolatedWorkspace | null = null;
+	let workspaceError: Error | null = null;
+	if (opts.mode === "live") {
+		try {
+			isolatedWorkspace = prepareIsolatedWorkspace({
+				repo: opts.repo,
+				runId,
+				worktreeBaseDir: opts.worktreeBaseDir,
+			});
+			executionRepo = isolatedWorkspace.cwd;
+			emit({
+				type: "workspace_prepared",
+				sourceRepo: isolatedWorkspace.sourceRepoRoot,
+				worktree: isolatedWorkspace.worktreeRoot,
+				baseCommit: isolatedWorkspace.baseCommit,
+				baselineCommit: isolatedWorkspace.baselineCommit,
+				sourceWasDirty: isolatedWorkspace.sourceWasDirty,
+			});
+		} catch (err) {
+			workspaceError = err as Error;
+			emit({ type: "log", message: `isolated worktree preparation failed: ${workspaceError.message}` });
+		}
+	}
+
 	const ledger = new BudgetLedger(budget);
 	let factory: PiWorkerFactory | null = null;
-	let factoryError: Error | null = null;
+	let factoryError: Error | null = workspaceError;
 	let workerModelLabel: string | undefined;
-	if (opts.mode === "live") {
+	if (opts.mode === "live" && !workspaceError) {
 		try {
 			factory = new PiWorkerFactory();
 			workerModelLabel = factory.modelLabel;
@@ -440,16 +501,14 @@ export async function executeRun(opts: ExecuteOptions): Promise<ExecuteResult> {
 			workerModelLabel = "unavailable";
 			emit({ type: "log", message: `worker model unavailable: ${factoryError.message}` });
 		}
+	}
+	if (opts.mode === "live") {
 		if (control) {
 			emit({ type: "log", message: `control model (WEA): ${control.modelId} @ ${control.baseUrl}` });
 		} else {
 			emit({ type: "log", message: "control model (WEA): offline / not configured — retrieval only" });
 		}
 	}
-
-	const runId = crypto.randomUUID();
-	const traceId = newTraceId();
-	const startedAt = new Date().toISOString();
 	const records: NodeRunRecord[] = [];
 	const escalations: EscalationSignal[] = [];
 	let controlUsageAcc: ControlUsage = { ...(plan.controlUsage ?? { inputTokens: 0, outputTokens: 0 }) };
@@ -786,8 +845,8 @@ export async function executeRun(opts: ExecuteOptions): Promise<ExecuteResult> {
 									kind: node.kind,
 									card,
 									taskPrompt,
-									cwd: opts.repo,
-									repoRoot: opts.repo,
+									cwd: executionRepo,
+									repoRoot: executionRepo,
 									factory,
 									ledger,
 									nodeBudget: node.budget,
@@ -1107,7 +1166,65 @@ export async function executeRun(opts: ExecuteOptions): Promise<ExecuteResult> {
 	const snapFinal = ledger.snapshot();
 
 	const files: string[] = [];
-	if (opts.mode === "live" && opts.out) {
+	const finalGeneration = activeGraphGeneration(records);
+	const terminalNodeIds = graph.edges.filter((e) => e.to === "@output").map((e) => e.from);
+	const terminalRecords = terminalNodeIds
+		.map((id) => latestRecordInGeneration(records, id, finalGeneration, false))
+		.filter((r): r is NodeRunRecord => !!r);
+	const verificationRecord = terminalRecords.find((r) => r.kind === "verifier" || r.agentCard === "verifier");
+	const finalOutput = verificationRecord?.output ?? terminalRecords.at(-1)?.output ?? null;
+	const verification = verificationRecord?.output ?? null;
+	const safeRef = templateRef.replace(/[^a-zA-Z0-9._@-]+/g, "_");
+	const artifactBase = opts.out ? join(opts.out, `${safeRef}-${runId.slice(0, 8)}`) : undefined;
+	let workspaceResult: WorkspaceResult | undefined;
+	let patchPath: string | undefined;
+
+	if (isolatedWorkspace) {
+		try {
+			workspaceResult = captureWorkspaceResult(isolatedWorkspace);
+			if (artifactBase && opts.out) {
+				mkdirSync(opts.out, { recursive: true });
+				patchPath = `${artifactBase}.changes.patch`;
+				writeFileSync(patchPath, workspaceResult.patch);
+				const workspacePath = `${artifactBase}.workspace.json`;
+				writeFileSync(
+					workspacePath,
+					JSON.stringify(
+						{
+							sourceRepo: isolatedWorkspace.sourceRepoRoot,
+							sourceRequestedPath: isolatedWorkspace.sourceRequestedPath,
+							worktree: isolatedWorkspace.worktreeRoot,
+							baseCommit: isolatedWorkspace.baseCommit,
+							baselineCommit: isolatedWorkspace.baselineCommit,
+							sourceWasDirty: isolatedWorkspace.sourceWasDirty,
+							dependencyLinks: isolatedWorkspace.dependencyLinks,
+							status: workspaceResult.status,
+							changedFiles: workspaceResult.changedFiles,
+							commits: workspaceResult.commits,
+							verification,
+							autoApplied: false,
+							note: "Changes remain isolated. Review the patch/worktree before applying them to the source checkout.",
+						},
+						null,
+						2,
+					) + "\n",
+				);
+				files.push(patchPath, workspacePath);
+			}
+			emit({
+				type: "workspace_result",
+				worktree: isolatedWorkspace.worktreeRoot,
+				changedFiles: workspaceResult.changedFiles,
+				patchPath,
+				verification,
+				note: "not applied to source checkout",
+			});
+		} catch (err) {
+			emit({ type: "log", message: `failed to capture isolated workspace result: ${String((err as Error).message)}` });
+		}
+	}
+
+	if (opts.mode === "live" && opts.out && artifactBase) {
 		const manifest: RunManifest = {
 			runId,
 			traceId,
@@ -1121,46 +1238,59 @@ export async function executeRun(opts: ExecuteOptions): Promise<ExecuteResult> {
 			startedAt,
 			endedAt,
 			status,
-			repoRoot: opts.repo,
+			repoRoot: executionRepo,
 			modelId: workerModelLabel ?? control?.modelId ?? "pi-default",
 			piVersion: "0.80.6",
 		};
 		mkdirSync(opts.out, { recursive: true });
-		const safeRef = templateRef.replace(/[^a-zA-Z0-9._@-]+/g, "_");
-		const base = join(opts.out, `${safeRef}-${runId.slice(0, 8)}`);
-		writeFileSync(`${base}.trace.json`, JSON.stringify(buildComplianceTrace(manifest), null, 2));
-		writeFileSync(`${base}.pvf.json`, JSON.stringify(buildPvfTrace(manifest), null, 2));
-		writeFileSync(
-			`${base}.manifest.json`,
-			JSON.stringify(
-				{
-					...manifest,
-					plan: {
-						mode: plan.mode,
-						why: plan.why,
-						baseId: plan.baseId,
-						version: plan.version,
-						writtenPath: plan.writtenPath,
-						controlUsage: controlUsageAcc,
-						controlModel: control?.modelId,
-						workerModel: workerModelLabel,
-						replanCount,
-						escalations,
-						improve: improveMeta
+		try {
+			writeFileSync(`${artifactBase}.trace.json`, JSON.stringify(buildComplianceTrace(manifest), null, 2));
+			writeFileSync(`${artifactBase}.pvf.json`, JSON.stringify(buildPvfTrace(manifest), null, 2));
+			writeFileSync(
+				`${artifactBase}.manifest.json`,
+				JSON.stringify(
+					{
+						...manifest,
+						workspace: isolatedWorkspace
 							? {
-									ok: improveMeta.ok,
-									why: improveMeta.why,
-									applied: improveMeta.applied,
-									writtenPath: improveMeta.writtenPath,
+									sourceRepo: isolatedWorkspace.sourceRepoRoot,
+									worktree: isolatedWorkspace.worktreeRoot,
+									baseCommit: isolatedWorkspace.baseCommit,
+									baselineCommit: isolatedWorkspace.baselineCommit,
+									changedFiles: workspaceResult?.changedFiles ?? [],
+									patchPath,
+									autoApplied: false,
 								}
 							: null,
+						plan: {
+							mode: plan.mode,
+							why: plan.why,
+							baseId: plan.baseId,
+							version: plan.version,
+							writtenPath: plan.writtenPath,
+							controlUsage: controlUsageAcc,
+							controlModel: control?.modelId,
+							workerModel: workerModelLabel,
+							replanCount,
+							escalations,
+							improve: improveMeta
+								? {
+										ok: improveMeta.ok,
+										why: improveMeta.why,
+										applied: improveMeta.applied,
+										writtenPath: improveMeta.writtenPath,
+									}
+								: null,
+						},
 					},
-				},
-				null,
-				2,
-			),
-		);
-		files.push(`${base}.trace.json`, `${base}.pvf.json`, `${base}.manifest.json`);
+					null,
+					2,
+				),
+			);
+			files.push(`${artifactBase}.trace.json`, `${artifactBase}.pvf.json`, `${artifactBase}.manifest.json`);
+		} catch (err) {
+			emit({ type: "log", message: `trace export failed without changing task result: ${String((err as Error).message)}` });
+		}
 	}
 
 	emit({
@@ -1178,6 +1308,17 @@ export async function executeRun(opts: ExecuteOptions): Promise<ExecuteResult> {
 		costMicrounits: snapFinal.monetaryMicrounitsUsed,
 		files,
 		plan,
+		finalOutput,
+		workspace: isolatedWorkspace
+			? {
+					sourceRepo: isolatedWorkspace.sourceRepoRoot,
+					worktree: isolatedWorkspace.worktreeRoot,
+					baselineCommit: isolatedWorkspace.baselineCommit,
+					changedFiles: workspaceResult?.changedFiles ?? [],
+					patchPath,
+					verification,
+				}
+			: undefined,
 	};
 }
 

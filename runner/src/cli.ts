@@ -225,6 +225,15 @@ async function cmdRun(argv: string[]): Promise<void> {
 		});
 	}
 	if (result.files?.length) journal.noteArtifacts(result.files);
+	if (result.workspace) {
+		journal.log(`[review] source checkout was NOT modified`);
+		journal.log(`[review] isolated worktree: ${result.workspace.worktree}`);
+		journal.log(`[review] changed files: ${result.workspace.changedFiles.join(", ") || "(none)"}`);
+		if (result.workspace.patchPath) journal.log(`[review] patch: ${result.workspace.patchPath}`);
+	}
+	if (result.finalOutput) {
+		journal.log(`[final] ${String(result.finalOutput.summary ?? "workflow finished")}`);
+	}
 
 	journal.log(`journal directory: ${journal.runDir}`);
 	console.log(`\n📁 Full decision log: ${journal.runDir}`);
