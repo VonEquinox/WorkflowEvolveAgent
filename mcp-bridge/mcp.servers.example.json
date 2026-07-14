@@ -1,0 +1,22 @@
+{
+  "servers": [
+    {
+      "name": "fs",
+      "transport": "stdio",
+      "command": "node",
+      "args": ["./node_modules/@modelcontextprotocol/server-filesystem/dist/index.js", "/path/to/allowed/dir"]
+    },
+    {
+      "name": "github",
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": { "GITHUB_PERSONAL_ACCESS_TOKEN": "$GITHUB_TOKEN" }
+    },
+    {
+      "name": "remote",
+      "transport": "http",
+      "url": "https://mcp.example.com/sse"
+    }
+  ]
+}

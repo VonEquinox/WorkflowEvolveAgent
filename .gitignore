@@ -29,6 +29,10 @@ library/templates/*.champion.json
 # exact-reuse CAS (gitignored via cache/ too, but be explicit)
 library/cache/
 
+# MCP bridge: local server config may carry secrets — keep only the example
+mcp-bridge/mcp.servers.json
+**/mcp.servers.json
+
 # research / design docs — kept local, not published
 research/
 SELF_EVOLVING_AGENT_RESEARCH_PLAN.md

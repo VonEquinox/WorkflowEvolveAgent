@@ -1,0 +1,19 @@
+{
+  "name": "@wea/mcp-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "MCP-over-bash bridge: session-lived resident MCP connections + a thin bash-callable CLI (WEA §9, D15-D18)",
+  "engines": { "node": ">=20" },
+  "bin": { "wea-mcp": "./src/cli.ts" },
+  "scripts": { "typecheck": "tsc --noEmit", "test": "tsx src/selftest.ts" },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.0",
+    "typescript": "^5.5.0",
+    "@types/node": "^22.0.0",
+    "@modelcontextprotocol/server-filesystem": "^2026.7.10"
+  }
+}
