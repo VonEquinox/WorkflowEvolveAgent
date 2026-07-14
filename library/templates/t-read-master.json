@@ -1,0 +1,31 @@
+{
+  "id": "t-read-master",
+  "version": "1.0.0",
+  "catalog": true,
+  "summary": "Read-first master: cheap inspector recon (read/grep/ls only) then proactive WEA master handoff plans and dispatches a code-edit graph. Prefer for any non-trivial change where strong planning should follow recon. Tags: read recon inspect handoff master control.",
+  "graph": {
+    "nodes": [
+      {
+        "id": "read",
+        "kind": "planner",
+        "agentCard": "inspector",
+        "trigger": "ALL_SUCCESS",
+        "promptTemplate": "Task:\n${task}\n\nYou are a READ-ONLY recon worker (pi). Map the repo and gather facts the strong WEA master needs to plan.\n\nDo:\n1. Layout: package/module roots, entrypoints, test dirs, config (package.json, tsconfig, pyproject, Cargo.toml, go.mod, Makefile, CI).\n2. Locate symbols/files for the task (grep/find); read only critical sections.\n3. Note existing patterns, APIs, and constraints (types, auth, error handling).\n4. List change surface candidates and open questions — do NOT decide architecture or implement.\n\nOUTPUT: exactly one JSON object:\n{\n  \"summary\": \"<one-sentence framing>\",\n  \"files_seen\": [\"...\"],\n  \"change_surface\": [\"path or path:symbol\"],\n  \"subtasks\": [\"factual next step for a planner, not code\"],\n  \"risks\": [\"unknowns, coupling, missing tests\"],\n  \"stack_hints\": [\"language/framework/test runner if known\"],\n  \"tests_related\": [\"existing test paths or none found\"]\n}\n\nEscalate only if the working tree is empty/unreadable or the task is nonsensical."
+      },
+      {
+        "id": "wea_master",
+        "kind": "planner",
+        "agentCard": "master-handoff",
+        "controlHandoff": true,
+        "trigger": "ALL_SUCCESS",
+        "promptTemplate": "Proactive WEA master handoff AFTER read-only recon. Upstream inspector findings:\n${upstream}\n\nOwn the hard plan (architecture, file-level steps, acceptance). Dispatch a code-edit graph; do not write application code yourself."
+      }
+    ],
+    "edges": [
+      { "id": "e_in_read", "from": "@input", "to": "read", "kind": "DATA" },
+      { "id": "e_read_master", "from": "read", "to": "wea_master", "kind": "DATA" },
+      { "id": "e_master_out", "from": "wea_master", "to": "@output", "kind": "DATA" }
+    ],
+    "loops": []
+  }
+}

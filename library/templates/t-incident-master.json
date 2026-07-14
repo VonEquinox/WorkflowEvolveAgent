@@ -1,0 +1,31 @@
+{
+  "id": "t-incident-master",
+  "version": "1.0.0",
+  "catalog": true,
+  "summary": "Incident/debug with master handoff: gather evidence from logs/code (read-only) then WEA master decides mitigation vs root-cause fix and dispatches edit graph. Tags: incident outage crash debug log stacktrace handoff master.",
+  "graph": {
+    "nodes": [
+      {
+        "id": "triage",
+        "kind": "planner",
+        "agentCard": "inspector",
+        "trigger": "ALL_SUCCESS",
+        "promptTemplate": "Incident / debug report:\n${task}\n\nYou are a READ-ONLY triage agent (pi). Collect evidence for the WEA master; do not apply hotfixes.\n\nDo:\n1. Extract symptoms, timeline, error codes, stack frames from the task text.\n2. Map frames/symbols to repo files; read critical handlers.\n3. Distinguish likely user error / config / code defect / dependency.\n4. Note blast radius (which endpoints/jobs share the path).\n5. Suggest evidence still missing (metrics, repro) under risks.\n\nOUTPUT: exactly one JSON object:\n{\n  \"summary\": \"<incident in one sentence>\",\n  \"files_seen\": [\"...\"],\n  \"change_surface\": [\"suspect code\"],\n  \"symptoms\": [\"...\"],\n  \"hypotheses\": [{\"rank\": 1, \"kind\": \"code|config|dep|user\", \"why\": \"...\"}],\n  \"blast_radius\": [\"...\"],\n  \"subtasks\": [\"what master should decide\"],\n  \"risks\": [\"missing data, prod-only\"],\n  \"tests_related\": [\"...\"]\n}"
+      },
+      {
+        "id": "wea_master",
+        "kind": "planner",
+        "agentCard": "master-handoff",
+        "controlHandoff": true,
+        "trigger": "ALL_SUCCESS",
+        "promptTemplate": "Incident master handoff after triage. Upstream:\n${upstream}\n\nDecide: immediate mitigation vs root-cause fix (or both, ordered). Write master plan with safety constraints (feature flags, rollback). Dispatch patch→verify (or implement→verify). Prefer minimal production risk."
+      }
+    ],
+    "edges": [
+      { "id": "e_in_triage", "from": "@input", "to": "triage", "kind": "DATA" },
+      { "id": "e_triage_master", "from": "triage", "to": "wea_master", "kind": "DATA" },
+      { "id": "e_master_out", "from": "wea_master", "to": "@output", "kind": "DATA" }
+    ],
+    "loops": []
+  }
+}

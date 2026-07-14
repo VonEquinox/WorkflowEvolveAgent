@@ -354,6 +354,35 @@ Ports:
        → explore_b ──┴→ aggregate → implement ⇄ verify → @output
 ```
 
+#### Handoff family (read → WEA master → edit)
+
+Pattern: **cheap read-only workers first**, then a `master-handoff` node
+(`controlHandoff: true`) returns control to the strong WEA model mid-graph.
+Master emits `master_plan` + a code-edit subgraph (usually `t-implement-verify`
+or `t-patch-regression`, both `catalog: false` stage graphs).
+
+| Id | Shape | When |
+|----|-------|------|
+| `t-read-master` | read → **WEA** | Default non-trivial work |
+| `t-bugfix-master` | localize → **WEA** | Bugs with strong root-cause plan |
+| `t-feature-master` | inspect patterns → **WEA** | Features / APIs |
+| `t-refactor-master` | impact analysis → **WEA** | Refactors / renames |
+| `t-explore-master-implement` | explore×2 → **WEA** | Multi-approach design |
+| `t-review-master` | review×2 → **WEA** | Dual-angle review / audit |
+| `t-test-master` | map tests → **WEA** | Coverage / harness / flaky |
+| `t-incident-master` | triage → **WEA** | Incidents / stacktraces |
+| `t-migrate-master` | inventory → **WEA** | Upgrades / deprecations |
+| `t-docs-master` | read docs+code → **WEA** | Documentation grounded in code |
+
+```
+@input → read/inspect/... → wea_master(controlHandoff) → @output
+                              │
+                              ▼ (master dispatches)
+                         implement ⇄ verify   (or patch ⇄ regression)
+```
+
+Classic T0–T3 remain for cheap worker-only paths (no mid-run master).
+
 ### 5.4 Agent cards (roles)
 
 | Card | Typical tools | Duty |
@@ -363,6 +392,7 @@ Ports:
 | `aggregator` | read-only | Merge parallel proposals |
 | `implementer` | read + edit/write/bash | Apply change |
 | `verifier` | read + bash | Independent verdict JSON |
+| `master-handoff` | *(no pi session)* | Graph marker: WEA control plans + dispatches edit graph |
 | `meta-improver` | **no tools** | Redesign template only |
 
 Every node’s final assistant message must parse as a **JSON object** (contract).

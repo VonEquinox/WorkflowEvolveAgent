@@ -1,0 +1,40 @@
+{
+  "id": "t-review-master",
+  "version": "1.0.0",
+  "catalog": true,
+  "summary": "Dual-angle code review then WEA master: two read-only reviewers (correctness vs maintainability) then master prioritizes findings and dispatches fix graph. Tags: review audit security quality handoff master parallel.",
+  "graph": {
+    "nodes": [
+      {
+        "id": "review_correctness",
+        "kind": "planner",
+        "agentCard": "explorer",
+        "trigger": "ALL_SUCCESS",
+        "promptTemplate": "Review task (CORRECTNESS / safety angle):\n${task}\n\nYou are a READ-ONLY reviewer A (pi). Focus on bugs, edge cases, races, nulls, authz, data loss, incorrect APIs. Do not rewrite code.\n\nOUTPUT: exactly one JSON object:\n{\n  \"summary\": \"<correctness posture>\",\n  \"angle\": \"correctness\",\n  \"findings\": [{\"severity\": \"high|med|low\", \"where\": \"path:symbol\", \"issue\": \"...\", \"suggest\": \"direction only\"}],\n  \"files_seen\": [\"...\"],\n  \"change_surface\": [\"if fixes needed\"],\n  \"subtasks\": [\"...\"],\n  \"risks\": [\"...\"]\n}"
+      },
+      {
+        "id": "review_maintain",
+        "kind": "planner",
+        "agentCard": "explorer",
+        "trigger": "ALL_SUCCESS",
+        "promptTemplate": "Review task (MAINTAINABILITY / design angle):\n${task}\n\nYou are a READ-ONLY reviewer B (pi). Focus on structure, duplication, naming, test gaps, API clarity, complexity. Do not rewrite code.\n\nOUTPUT: exactly one JSON object:\n{\n  \"summary\": \"<maintainability posture>\",\n  \"angle\": \"maintainability\",\n  \"findings\": [{\"severity\": \"high|med|low\", \"where\": \"path:symbol\", \"issue\": \"...\", \"suggest\": \"direction only\"}],\n  \"files_seen\": [\"...\"],\n  \"change_surface\": [\"...\"],\n  \"subtasks\": [\"...\"],\n  \"risks\": [\"...\"]\n}"
+      },
+      {
+        "id": "wea_master",
+        "kind": "planner",
+        "agentCard": "master-handoff",
+        "controlHandoff": true,
+        "trigger": "ALL_SUCCESS",
+        "promptTemplate": "Review master handoff. Two independent review reports upstream:\n${upstream}\n\nDeduplicate, rank by severity, decide which findings become must-fix vs deferred, write a concrete fix plan, dispatch implement→verify. Prefer high-severity correctness over style nits."
+      }
+    ],
+    "edges": [
+      { "id": "e_in_a", "from": "@input", "to": "review_correctness", "kind": "DATA" },
+      { "id": "e_in_b", "from": "@input", "to": "review_maintain", "kind": "DATA" },
+      { "id": "e_a_master", "from": "review_correctness", "to": "wea_master", "kind": "DATA" },
+      { "id": "e_b_master", "from": "review_maintain", "to": "wea_master", "kind": "DATA" },
+      { "id": "e_master_out", "from": "wea_master", "to": "@output", "kind": "DATA" }
+    ],
+    "loops": []
+  }
+}

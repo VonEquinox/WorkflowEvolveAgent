@@ -2,7 +2,7 @@
   "id": "t-explore-master-implement",
   "version": "1.0.0",
   "catalog": true,
-  "summary": "Explore (cheap workers) -> WEA master handoff (strong model plans) -> dispatch code-edit graph. Demonstrates proactive control takeover. Tags: parallel explore fanout master handoff.",
+  "summary": "Parallel explore (cheap workers) -> WEA master handoff (strong model plans) -> dispatch code-edit graph. Prefer multi-approach design before strong planning. Tags: parallel explore fanout master handoff control.",
   "graph": {
     "nodes": [
       {

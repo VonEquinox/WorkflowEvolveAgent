@@ -1,0 +1,31 @@
+{
+  "id": "t-bugfix-master",
+  "version": "1.0.0",
+  "catalog": true,
+  "summary": "Bugfix with master handoff: localize/reproduce (read-only) then WEA master owns root-cause plan and dispatches patch→regression graph. Tags: bugfix defect crash regression localize handoff master.",
+  "graph": {
+    "nodes": [
+      {
+        "id": "localize",
+        "kind": "planner",
+        "agentCard": "inspector",
+        "trigger": "ALL_SUCCESS",
+        "promptTemplate": "Bug report:\n${task}\n\nYou are a READ-ONLY localizer (pi worker). Goal: give the WEA master enough evidence to plan a minimal fix.\n\nDo:\n1. Parse the failure signal (error text, stack, failing test name, expected vs actual).\n2. Find the test or repro path; read the assertion and the SUT (system under test).\n3. Trace likely root cause to file:symbol; list alternate suspects if uncertain.\n4. Note adjacent regressions to watch (callers, similar tests).\n5. Do NOT patch. Do NOT invent a full redesign.\n\nOUTPUT: exactly one JSON object:\n{\n  \"summary\": \"<defect in one sentence>\",\n  \"files_seen\": [\"...\"],\n  \"change_surface\": [\"path:symbol most likely\"],\n  \"reproduction\": \"<how to repro or why not yet>\",\n  \"root_cause_hypotheses\": [{\"rank\": 1, \"where\": \"path:symbol\", \"why\": \"...\"}],\n  \"subtasks\": [\"minimal fix direction for master, not code\"],\n  \"risks\": [\"...\"],\n  \"tests_related\": [\"test paths to run after patch\"]\n}\n\nIf you cannot find any relevant code, still emit JSON with risks and escalate:true."
+      },
+      {
+        "id": "wea_master",
+        "kind": "planner",
+        "agentCard": "master-handoff",
+        "controlHandoff": true,
+        "trigger": "ALL_SUCCESS",
+        "promptTemplate": "Bugfix master handoff after localization. Upstream localize report:\n${upstream}\n\nDecide root cause, minimal patch plan, acceptance (which tests), and dispatch a patch→regression edit graph. Prefer smallest correct fix over rewrite."
+      }
+    ],
+    "edges": [
+      { "id": "e_in_localize", "from": "@input", "to": "localize", "kind": "DATA" },
+      { "id": "e_localize_master", "from": "localize", "to": "wea_master", "kind": "DATA" },
+      { "id": "e_master_out", "from": "wea_master", "to": "@output", "kind": "DATA" }
+    ],
+    "loops": []
+  }
+}

@@ -32,10 +32,15 @@ console.log("Phase 3 — retrieval");
 {
 	const bug = retrieve({ goal: "the test fails, fix the off-by-one bug", family: "bugfix", hasOracle: true });
 	check("bugfix task → t2-bugfix", bug[0]!.id === "t2-bugfix");
-	const cx = retrieve({ goal: "add a feature needing parallel exploration and merging" });
+	// Query stresses fanout+merge shape without the word "feature" (which routes to t-feature-master).
+	const cx = retrieve({ goal: "need parallel exploration and merging of approaches" });
 	check("parallel/merge task → t3-complex via shape tags", cx[0]!.id === "t3-complex");
 	const blank = retrieve({ goal: "" });
 	check("no-signal task → safe-generic fallback", blank[0]!.id === "t1-safe-generic");
+	const readMaster = retrieve({ goal: "inspect the repo then handoff to master for a complex change", family: "read" });
+	check("read/handoff family → t-read-master", readMaster[0]!.id === "t-read-master");
+	const featMaster = retrieve({ goal: "add a new API endpoint following existing patterns", family: "feature" });
+	check("feature family → t-feature-master", featMaster[0]!.id === "t-feature-master");
 }
 
 // ---- Phase 4 ----------------------------------------------------------------

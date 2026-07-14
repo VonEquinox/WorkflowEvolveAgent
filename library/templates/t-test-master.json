@@ -1,0 +1,31 @@
+{
+  "id": "t-test-master",
+  "version": "1.0.0",
+  "catalog": true,
+  "summary": "Test engineering with master handoff: map test layout and coverage gaps (read-only) then WEA master plans tests and/or harness changes and dispatches implement→verify. Tags: test coverage unit e2e harness flaky handoff master.",
+  "graph": {
+    "nodes": [
+      {
+        "id": "map_tests",
+        "kind": "planner",
+        "agentCard": "inspector",
+        "trigger": "ALL_SUCCESS",
+        "promptTemplate": "Testing task:\n${task}\n\nYou are a READ-ONLY test cartographer (pi). Prepare facts for the WEA master.\n\nDo:\n1. Detect test runner and conventions (jest/vitest/pytest/go test/cargo test, file naming, fixtures).\n2. Locate tests related to the task; note gaps (no tests, only e2e, missing edge cases).\n3. Identify pure units vs integration boundaries (I/O, network, clock).\n4. Note flakiness risks (time, order, shared state).\n5. Do NOT write tests yet.\n\nOUTPUT: exactly one JSON object:\n{\n  \"summary\": \"<testing goal>\",\n  \"files_seen\": [\"...\"],\n  \"test_runner\": \"<detected or unknown>\",\n  \"change_surface\": [\"prod + test files likely\"],\n  \"coverage_gaps\": [\"...\"],\n  \"subtasks\": [\"what master should plan\"],\n  \"risks\": [\"flaky, slow, env deps\"],\n  \"tests_related\": [\"existing related tests\"]\n}"
+      },
+      {
+        "id": "wea_master",
+        "kind": "planner",
+        "agentCard": "master-handoff",
+        "controlHandoff": true,
+        "trigger": "ALL_SUCCESS",
+        "promptTemplate": "Test-engineering master handoff. Upstream map:\n${upstream}\n\nPlan concrete tests (or harness fixes): file paths, cases, fixtures, how to run. If production code must change for testability, include that. Dispatch implement→verify with acceptance = tests pass."
+      }
+    ],
+    "edges": [
+      { "id": "e_in_map", "from": "@input", "to": "map_tests", "kind": "DATA" },
+      { "id": "e_map_master", "from": "map_tests", "to": "wea_master", "kind": "DATA" },
+      { "id": "e_master_out", "from": "wea_master", "to": "@output", "kind": "DATA" }
+    ],
+    "loops": []
+  }
+}

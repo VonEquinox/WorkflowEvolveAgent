@@ -1,0 +1,31 @@
+{
+  "id": "t-docs-master",
+  "version": "1.0.0",
+  "catalog": true,
+  "summary": "Docs/API notes with master handoff: read code + existing docs then WEA master outlines accurate documentation and dispatches implement→verify (doc-only edits). Tags: docs documentation readme api reference handoff master.",
+  "graph": {
+    "nodes": [
+      {
+        "id": "read_docs",
+        "kind": "planner",
+        "agentCard": "inspector",
+        "trigger": "ALL_SUCCESS",
+        "promptTemplate": "Documentation task:\n${task}\n\nYou are a READ-ONLY doc scout (pi). Ground the master in real code and existing docs.\n\nDo:\n1. Find current docs (README, docs/, OpenAPI, comments) related to the topic.\n2. Read the actual implementation the docs should describe.\n3. List inaccuracies or gaps (stale flags, missing examples, wrong paths).\n4. Do NOT write docs yet.\n\nOUTPUT: exactly one JSON object:\n{\n  \"summary\": \"<doc goal>\",\n  \"files_seen\": [\"...\"],\n  \"change_surface\": [\"doc paths to edit\"],\n  \"code_truth\": [\"behaviors that docs must match\"],\n  \"gaps\": [\"missing or wrong content\"],\n  \"subtasks\": [\"outline sections for master\"],\n  \"risks\": [\"secrets, unstable APIs\"],\n  \"tests_related\": []\n}"
+      },
+      {
+        "id": "wea_master",
+        "kind": "planner",
+        "agentCard": "master-handoff",
+        "controlHandoff": true,
+        "trigger": "ALL_SUCCESS",
+        "promptTemplate": "Docs master handoff after recon. Upstream:\n${upstream}\n\nOutline exact doc edits (files, sections, examples). Acceptance: matches code_truth, no secrets. Dispatch implement→verify (verifier checks consistency, not style fluff)."
+      }
+    ],
+    "edges": [
+      { "id": "e_in_docs", "from": "@input", "to": "read_docs", "kind": "DATA" },
+      { "id": "e_docs_master", "from": "read_docs", "to": "wea_master", "kind": "DATA" },
+      { "id": "e_master_out", "from": "wea_master", "to": "@output", "kind": "DATA" }
+    ],
+    "loops": []
+  }
+}

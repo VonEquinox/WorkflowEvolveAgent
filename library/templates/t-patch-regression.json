@@ -1,0 +1,33 @@
+{
+  "id": "t-patch-regression",
+  "version": "1.0.0",
+  "catalog": false,
+  "summary": "Stage subgraph after bugfix master handoff: Patch -> RegressionVerify with bounded fix loop. Expects ${master_plan} from WEA control.",
+  "graph": {
+    "nodes": [
+      {
+        "id": "patch",
+        "kind": "worker",
+        "agentCard": "implementer",
+        "trigger": "ALL_SUCCESS",
+        "promptTemplate": "Bug / defect task:\n${task}\n\nMaster plan (from WEA control — follow this):\n${master_plan}\n\nUpstream (verifier must_fix on fix passes):\n${upstream}\n\nApply the minimal patch described by the master plan. Do not expand scope. Produce the JSON report with files_changed and residual risks."
+      },
+      {
+        "id": "regression",
+        "kind": "verifier",
+        "agentCard": "verifier",
+        "trigger": "ALL_SUCCESS",
+        "promptTemplate": "Bug / defect task:\n${task}\n\nMaster plan:\n${master_plan}\n\nPatch report:\n${upstream}\n\nVerify the defect is fixed AND no regression (run the tests named in the master plan via bash when available). Produce the verdict JSON."
+      }
+    ],
+    "edges": [
+      { "id": "e_in_patch", "from": "@input", "to": "patch", "kind": "DATA" },
+      { "id": "e_patch_reg", "from": "patch", "to": "regression", "kind": "DATA" },
+      { "id": "e_reg_out", "from": "regression", "to": "@output", "kind": "DATA" },
+      { "id": "e_fix_loop", "from": "regression", "to": "patch", "kind": "FEEDBACK", "loopId": "fix" }
+    ],
+    "loops": [
+      { "id": "fix", "bodyNodes": ["patch", "regression"], "feedbackEdges": ["e_fix_loop"], "maxIterations": 2 }
+    ]
+  }
+}

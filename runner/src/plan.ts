@@ -80,24 +80,37 @@ Decide ONE of:
   C) "cold_start" — catalog is a poor fit; invent a full new graph from scratch
 
 Classification guidance (you decide; these are hints, not rules):
-  - failing test / off-by-one / crash / regression → often t2-bugfix (or adapt it)
+  - failing test / off-by-one / crash / regression → prefer t-bugfix-master
+    (localize → YOU handoff) or classic t2-bugfix if no mid-run master needed
   - small direct change with clear acceptance → often t0-direct or t1-safe-generic
-  - multi-approach design / large feature / unclear exploration → prefer
-    t-explore-master-implement (explore → YOU plan at handoff → edit) or t3-complex
-  - architecture / multi-file design where workers need a strong plan → handoff-style graphs
+  - non-trivial change that needs recon then strong plan → t-read-master
+    (inspector read → YOU handoff) — default strong path for most engineering work
+  - feature / API enhancement → t-feature-master (pattern inspect → handoff)
+  - refactor / rename / extract → t-refactor-master (impact analysis → handoff)
+  - multi-approach design / large unclear exploration → t-explore-master-implement
+    or t3-complex (worker-only aggregate if you do not need mid-run master)
+  - dual-angle review / audit → t-review-master
+  - test coverage / harness / flaky tests → t-test-master
+  - incident / outage / stacktrace → t-incident-master
+  - migrate / upgrade / deprecation → t-migrate-master
+  - documentation grounded in code → t-docs-master
+  - architecture / multi-file design → handoff-style graphs (read/explore then master)
   - nothing fits topology → cold_start a small custom graph (you may include a
-    master-handoff node with controlHandoff:true after explorers)
+    master-handoff node with controlHandoff:true AFTER read/explore nodes)
 
 Prefer "use" when a catalog graph already fits.
 Prefer "adapt" for small prompt/topology tweaks (drop redundant node, tighten prompts, add loop).
 Use "cold_start" only when no catalog template is a reasonable base.
 
-Special template: t-explore-master-implement runs cheap explorers then a WEA master
-handoff (you, the strong model, plan mid-run) then a code-edit subgraph. Prefer it when
-the task benefits from multi-approach exploration before strong planning.
+Handoff family (preferred for hard work):
+  Workers READ first (inspector/explorer only — no write tools). Then a node with
+  agentCard "master-handoff" and controlHandoff:true returns control to YOU mid-graph.
+  You synthesize master_plan and dispatch a code-edit subgraph (implement→verify or
+  patch→regression). Stage subgraphs t-implement-verify / t-patch-regression are
+  catalog:false (not ranked offline) but loadable by id / as handoff defaults.
 
 Agent cards available to nodes (agentCard field MUST be one of these):
-  inspector, explorer, aggregator, implementer, verifier
+  inspector, explorer, aggregator, implementer, verifier, master-handoff
 
 Node kinds: planner | worker | verifier | aggregator
 Triggers: ALL_SUCCESS | ANY_SUCCESS
@@ -141,7 +154,7 @@ OUTPUT: exactly one JSON object (no markdown), one of these shapes:
       {
         "id": "<unique>",
         "kind": "planner|worker|verifier|aggregator",
-        "agentCard": "inspector|explorer|aggregator|implementer|verifier",
+        "agentCard": "inspector|explorer|aggregator|implementer|verifier|master-handoff",
         "trigger": "ALL_SUCCESS|ANY_SUCCESS",
         "promptTemplate": "Task:\\n\${task}\\n\\n... may use \${upstream}"
       }

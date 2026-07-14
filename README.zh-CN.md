@@ -246,23 +246,39 @@ T=(id,version,summary,G),\quad G=(V,E,L)
 | CONTROL | 是 | 控制依赖 |
 | FEEDBACK | **否** | 仅用于有界回环 |
 
-### 5.3 冷启动模板
+### 5.3 冷启动 / 预制模板
+
+**经典 worker-only（无中途 master）：**
 
 | 模板 | 结构 | 场景 |
 |------|------|------|
 | **t0-direct** | inspect→implement→verify | 最简单 |
 | **t1-safe-generic** | 同上 + fix 环 | 通用默认 |
-| **t2-bugfix** | localize→patch⇄regression | 修 bug |
-| **t3-complex** | explore×2→aggregate→implement⇄verify | 复杂并行 |
+| **t2-bugfix** | localize→patch⇄regression | 修 bug（工人自决） |
+| **t3-complex** | explore×2→aggregate→implement⇄verify | 并行探索后工人聚合 |
+
+**Handoff 族（read 后主动交管 WEA）：**  
+先只读 recon，再 `master-handoff`（`controlHandoff: true`）把控制权交回强模型；
+master 产出 `master_plan` 并派发改码子图（`t-implement-verify` / `t-patch-regression`，`catalog: false`）。
+
+| 模板 | 结构 | 场景 |
+|------|------|------|
+| **t-read-master** | read → **WEA** | 非平凡改动的默认强路径 |
+| **t-bugfix-master** | localize → **WEA** | 修 bug，主控定根因与补丁计划 |
+| **t-feature-master** | inspect → **WEA** | 功能 / API |
+| **t-refactor-master** | impact → **WEA** | 重构 / 重命名 |
+| **t-explore-master-implement** | explore×2 → **WEA** | 多方案后再强规划 |
+| **t-review-master** | review×2 → **WEA** | 双视角评审 / 审计 |
+| **t-test-master** | map_tests → **WEA** | 补测 / 治 flaky |
+| **t-incident-master** | triage → **WEA** | 事故 / 栈追踪 |
+| **t-migrate-master** | inventory → **WEA** | 升级 / 迁移 |
+| **t-docs-master** | read_docs → **WEA** | 文档对齐代码 |
 
 ```
-T2:
-  @input → localize → patch ⇄ regression → @output
-                       ▲ FEEDBACK max=2
-
-T3:
-  @input → explore_a ──┐
-         → explore_b ──┴→ aggregate → implement ⇄ verify → @output
+@input → read/inspect/... → wea_master(controlHandoff) → @output
+                              │
+                              ▼ master 派发
+                         implement ⇄ verify  （或 patch ⇄ regression）
 ```
 
 ### 5.4 角色卡
@@ -273,6 +289,7 @@ T3:
 | aggregator | 只读 | 合并并行方案 |
 | implementer | 读写+bash | 改代码 |
 | verifier | 读+bash | 独立裁决 |
+| master-handoff | *(不开 pi 会话)* | 图标记：WEA 主控规划并派发改码图 |
 | meta-improver | **无工具** | 只改模板图 |
 
 节点最终消息必须是 **JSON 对象**；解析失败 = 节点失败。

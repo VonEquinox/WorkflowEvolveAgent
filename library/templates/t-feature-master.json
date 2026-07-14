@@ -1,0 +1,31 @@
+{
+  "id": "t-feature-master",
+  "version": "1.0.0",
+  "catalog": true,
+  "summary": "Feature work with master handoff: inspect existing patterns (read-only) then WEA master designs the implementation plan and dispatches implement→verify. Tags: feature enhancement API add handoff master.",
+  "graph": {
+    "nodes": [
+      {
+        "id": "inspect",
+        "kind": "planner",
+        "agentCard": "inspector",
+        "trigger": "ALL_SUCCESS",
+        "promptTemplate": "Feature request:\n${task}\n\nYou are a READ-ONLY inspector (pi). Collect pattern evidence so the WEA master can design the feature without guessing the codebase style.\n\nDo:\n1. Find analogous features/modules (naming, folder layout, DI, error handling, validation).\n2. Identify extension points (interfaces, routers, schemas, config flags).\n3. Note tests conventions (unit vs e2e, fixtures, factories).\n4. List files likely to change and files that must stay stable.\n5. Do NOT implement or invent a greenfield architecture that ignores the repo.\n\nOUTPUT: exactly one JSON object:\n{\n  \"summary\": \"<feature in one sentence>\",\n  \"files_seen\": [\"...\"],\n  \"change_surface\": [\"likely touch points\"],\n  \"patterns\": [\"existing conventions to follow\"],\n  \"extension_points\": [\"where to plug in\"],\n  \"subtasks\": [\"planning-level steps for master\"],\n  \"risks\": [\"compat, migration, security, perf\"],\n  \"tests_related\": [\"where tests should land\"]\n}"
+      },
+      {
+        "id": "wea_master",
+        "kind": "planner",
+        "agentCard": "master-handoff",
+        "controlHandoff": true,
+        "trigger": "ALL_SUCCESS",
+        "promptTemplate": "Feature master handoff after pattern recon. Upstream inspect:\n${upstream}\n\nProduce a concrete master plan (API shape, files, order of work, acceptance tests) matching repo conventions, then dispatch implement→verify."
+      }
+    ],
+    "edges": [
+      { "id": "e_in_inspect", "from": "@input", "to": "inspect", "kind": "DATA" },
+      { "id": "e_inspect_master", "from": "inspect", "to": "wea_master", "kind": "DATA" },
+      { "id": "e_master_out", "from": "wea_master", "to": "@output", "kind": "DATA" }
+    ],
+    "loops": []
+  }
+}

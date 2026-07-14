@@ -1,0 +1,31 @@
+{
+  "id": "t-migrate-master",
+  "version": "1.0.0",
+  "catalog": true,
+  "summary": "Migration/upgrade with master handoff: inventory current surface (read-only) then WEA master sequences migration steps and dispatches implement→verify. Tags: migrate upgrade deprecation dependency version handoff master.",
+  "graph": {
+    "nodes": [
+      {
+        "id": "inventory",
+        "kind": "planner",
+        "agentCard": "inspector",
+        "trigger": "ALL_SUCCESS",
+        "promptTemplate": "Migration / upgrade task:\n${task}\n\nYou are a READ-ONLY inventory agent (pi). Map what must move so the WEA master can sequence work safely.\n\nDo:\n1. Find version pins, lockfiles, and config for the target technology.\n2. List usages of deprecated APIs / old patterns (grep).\n3. Note dual-write / feature-flag / back-compat requirements if present.\n4. Identify tests and CI jobs that gate the migration.\n5. Do NOT migrate yet.\n\nOUTPUT: exactly one JSON object:\n{\n  \"summary\": \"<migration goal>\",\n  \"files_seen\": [\"...\"],\n  \"change_surface\": [\"hotspots\"],\n  \"current_versions\": [\"detected pins if any\"],\n  \"usage_sites\": [\"path:pattern\"],\n  \"compat_constraints\": [\"...\"],\n  \"subtasks\": [\"phased steps for master\"],\n  \"risks\": [\"breaking change, data, downtime\"],\n  \"tests_related\": [\"...\"]\n}"
+      },
+      {
+        "id": "wea_master",
+        "kind": "planner",
+        "agentCard": "master-handoff",
+        "controlHandoff": true,
+        "trigger": "ALL_SUCCESS",
+        "promptTemplate": "Migration master handoff after inventory. Upstream:\n${upstream}\n\nSequence the migration (phases, back-compat, flags), list exact file work, acceptance criteria, rollback. Dispatch implement→verify with a fix loop. Avoid big-bang unless inventory shows it is tiny."
+      }
+    ],
+    "edges": [
+      { "id": "e_in_inv", "from": "@input", "to": "inventory", "kind": "DATA" },
+      { "id": "e_inv_master", "from": "inventory", "to": "wea_master", "kind": "DATA" },
+      { "id": "e_master_out", "from": "wea_master", "to": "@output", "kind": "DATA" }
+    ],
+    "loops": []
+  }
+}

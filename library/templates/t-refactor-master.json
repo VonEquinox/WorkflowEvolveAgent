@@ -1,0 +1,31 @@
+{
+  "id": "t-refactor-master",
+  "version": "1.0.0",
+  "catalog": true,
+  "summary": "Safe refactor with master handoff: impact analysis (read-only call sites, types, tests) then WEA master plans mechanical steps and dispatches implement→verify. Tags: refactor cleanup restructure rename extract handoff master.",
+  "graph": {
+    "nodes": [
+      {
+        "id": "impact",
+        "kind": "planner",
+        "agentCard": "inspector",
+        "trigger": "ALL_SUCCESS",
+        "promptTemplate": "Refactor request:\n${task}\n\nYou are a READ-ONLY impact analyst (pi). The master must not break callers.\n\nDo:\n1. Identify the target symbol(s)/module(s) and all call sites (grep carefully).\n2. Note type contracts, public exports, serialization, and DB/schema touchpoints.\n3. List tests that pin current behavior (must stay green or be intentionally updated).\n4. Flag non-mechanical risks (behavior change vs pure structure).\n5. Do NOT refactor yet.\n\nOUTPUT: exactly one JSON object:\n{\n  \"summary\": \"<refactor goal>\",\n  \"files_seen\": [\"...\"],\n  \"change_surface\": [\"primary targets\"],\n  \"call_sites\": [\"path:symbol or path\"],\n  \"behavior_must_preserve\": [\"invariants\"],\n  \"subtasks\": [\"ordered mechanical steps for master\"],\n  \"risks\": [\"...\"],\n  \"tests_related\": [\"regression suite paths\"]\n}"
+      },
+      {
+        "id": "wea_master",
+        "kind": "planner",
+        "agentCard": "master-handoff",
+        "controlHandoff": true,
+        "trigger": "ALL_SUCCESS",
+        "promptTemplate": "Refactor master handoff after impact analysis. Upstream:\n${upstream}\n\nPlan a behavior-preserving refactor: ordered steps, file list, migration notes if any, acceptance = same tests green. Dispatch implement→verify with a tight fix loop."
+      }
+    ],
+    "edges": [
+      { "id": "e_in_impact", "from": "@input", "to": "impact", "kind": "DATA" },
+      { "id": "e_impact_master", "from": "impact", "to": "wea_master", "kind": "DATA" },
+      { "id": "e_master_out", "from": "wea_master", "to": "@output", "kind": "DATA" }
+    ],
+    "loops": []
+  }
+}

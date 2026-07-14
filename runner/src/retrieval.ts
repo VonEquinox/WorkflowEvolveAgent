@@ -46,8 +46,22 @@ export interface Candidate {
 const FAMILY_ROUTE: Record<string, string> = {
 	direct: "t0-direct",
 	generic: "t1-safe-generic",
+	// Classic worker-only bugfix (no mid-run master). Prefer t-bugfix-master via live control.
 	bugfix: "t2-bugfix",
 	complex: "t3-complex",
+	// Handoff-first families (read/recon → WEA master).
+	read: "t-read-master",
+	master: "t-read-master",
+	handoff: "t-read-master",
+	feature: "t-feature-master",
+	refactor: "t-refactor-master",
+	review: "t-review-master",
+	test: "t-test-master",
+	incident: "t-incident-master",
+	migrate: "t-migrate-master",
+	docs: "t-docs-master",
+	// Explicit master bugfix family (offline BM25 + rule).
+	bugfix_master: "t-bugfix-master",
 };
 
 const RULE_BONUS = 10; // additive; dominates BM25 so a matched family wins ties.
@@ -76,13 +90,22 @@ export function loadTemplateCatalog(dir = TEMPLATES_DIR): RunnerTemplate[] {
 export function templateDocument(tpl: RunnerTemplate): string {
 	const kinds = tpl.graph.nodes.map((n) => n.kind);
 	const tags: string[] = [];
-	if (kinds.filter((k) => k === "planner").length >= 2) tags.push("parallel", "explore", "fanout", "exploration");
-	if (kinds.includes("aggregator")) tags.push("aggregate", "merge", "merging", "fanin");
+	if (kinds.filter((k) => k === "planner").length >= 2) tags.push("parallel", "explore", "fanout", "exploration", "approaches");
+	if (kinds.includes("aggregator")) tags.push("aggregate", "merge", "merging", "fanin", "consensus");
+	// Worker-only multi-explore (no mid-run master): keep classic t3 findable offline.
+	if (kinds.includes("aggregator") && !tpl.graph.nodes.some((n) => (n as { controlHandoff?: boolean }).controlHandoff || n.agentCard === "master-handoff")) {
+		tags.push("worker-aggregate", "no-handoff");
+	}
 	if (kinds.includes("verifier")) tags.push("verify", "test", "review");
 	if (tpl.graph.loops.length > 0) tags.push("loop", "retry", "fix");
 	if (tpl.graph.nodes.length <= 3) tags.push("simple", "small", "direct");
 	if (tpl.graph.nodes.some((n) => (n as { controlHandoff?: boolean }).controlHandoff || n.agentCard === "master-handoff")) {
-		tags.push("master", "handoff", "control");
+		tags.push("master", "handoff", "control", "wea");
+	}
+	// Prefer tagging first planner/inspector as recon so "read then master" matches BM25.
+	const first = tpl.graph.nodes[0];
+	if (first && (first.agentCard === "inspector" || first.id.includes("read") || first.id.includes("inspect") || first.id.includes("localize") || first.id.includes("triage") || first.id.includes("impact") || first.id.includes("inventory") || first.id.includes("map"))) {
+		tags.push("read", "recon", "inspect");
 	}
 	return `${tpl.id} ${tpl.summary} ${tags.join(" ")}`.toLowerCase();
 }
