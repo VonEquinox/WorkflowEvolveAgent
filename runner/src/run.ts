@@ -14,13 +14,17 @@ import { join, resolve } from "node:path";
 import { BudgetLedger } from "./budget.ts";
 import { GraphScheduler } from "./graph.ts";
 import { loadTemplate } from "./library.ts";
+import { currentChampion } from "./champion.ts";
 import { runNode, SessionFactory } from "./node-session.ts";
+import { retrieve, type TaskCard } from "./retrieval.ts";
 import { buildComplianceTrace, buildPvfTrace, newTraceId, type RunManifest } from "./trace-export.ts";
 import type { NodeRunRecord, RunBudget } from "./types.ts";
 
 interface CliArgs {
 	task: string;
 	template: string;
+	family?: string;
+	language?: string;
 	repo: string;
 	out: string;
 	maxParallel: number;
@@ -33,13 +37,42 @@ function parseArgs(argv: string[]): CliArgs {
 		if (dflt !== undefined) return dflt;
 		throw new Error(`missing required ${flag}`);
 	};
+	const opt = (flag: string): string | undefined => {
+		const i = argv.indexOf(flag);
+		return i >= 0 && i + 1 < argv.length ? argv[i + 1] : undefined;
+	};
 	return {
 		task: get("--task"),
-		template: get("--template"),
+		// "auto" (or omitted) → Phase 3 retrieval picks the template.
+		template: get("--template", "auto"),
+		family: opt("--family"),
+		language: opt("--language"),
 		repo: resolve(get("--repo", process.cwd())),
 		out: resolve(get("--out", join(process.cwd(), "runs"))),
 		maxParallel: Number(get("--max-parallel", "3")),
 	};
+}
+
+/** Resolve "auto" to a concrete template via retrieval (Phase 3). */
+function resolveTemplate(args: CliArgs): string {
+	if (args.template !== "auto") return args.template;
+	const card: TaskCard = {
+		goal: args.task,
+		family: args.family,
+		language: args.language,
+		hasOracle: true, // runner always drives a test-bearing sandbox
+	};
+	const ranked = retrieve(card);
+	const chosen = ranked[0]!;
+	// Phase 5: if this family has a promoted champion version, run that instead
+	// of the base template — retrieval picks the family, the champion picks the version.
+	const champ = currentChampion(chosen.id);
+	if (champ !== chosen.id) {
+		log(`[retrieval] task → ${chosen.id} (score ${chosen.score.toFixed(2)}) → champion ${champ}`);
+		return champ;
+	}
+	log(`[retrieval] task → ${chosen.id} (score ${chosen.score.toFixed(2)}; ${chosen.why.join("; ") || "fallback"})`);
+	return chosen.id;
 }
 
 const DEFAULT_BUDGET: RunBudget = {
@@ -52,7 +85,8 @@ async function main(): Promise<void> {
 	const args = parseArgs(process.argv.slice(2));
 	const { baseUrl, apiKey, modelId } = requireEnv();
 
-	const { graph, cards, templateVersion } = loadTemplate(args.template);
+	const templateId = resolveTemplate(args);
+	const { graph, cards, templateVersion } = loadTemplate(templateId);
 	const factory = new SessionFactory({ baseUrl, apiKey, modelId });
 	const ledger = new BudgetLedger(DEFAULT_BUDGET);
 	const scheduler = new GraphScheduler(graph);
@@ -138,7 +172,7 @@ async function main(): Promise<void> {
 		runId,
 		traceId,
 		task: args.task,
-		templateId: args.template,
+		templateId: templateId,
 		templateVersion,
 		graph,
 		records,
@@ -153,7 +187,7 @@ async function main(): Promise<void> {
 	};
 
 	mkdirSync(args.out, { recursive: true });
-	const base = join(args.out, `${args.template}-${runId.slice(0, 8)}`);
+	const base = join(args.out, `${templateId}-${runId.slice(0, 8)}`);
 	writeFileSync(`${base}.trace.json`, JSON.stringify(buildComplianceTrace(manifest), null, 2));
 	writeFileSync(`${base}.pvf.json`, JSON.stringify(buildPvfTrace(manifest), null, 2));
 	writeFileSync(`${base}.manifest.json`, JSON.stringify(manifest, null, 2));

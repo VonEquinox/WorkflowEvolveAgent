@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "WEA L1+L2: graph scheduler + node sessions on top of pi SDK, emitting Trace IR",
+  "description": "WEA: observable, self-evolving coding-agent workflows on the pi SDK — graph scheduler, trace/PVF export, retrieval, exact reuse, meta-improvement, champion gate",
   "engines": {
     "node": ">=20"
   },
@@ -12,7 +12,11 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "run": "tsx src/run.ts"
+    "test": "tsx src/selftest.ts",
+    "smoke": "tsx src/smoke-export.ts",
+    "run": "tsx src/run.ts",
+    "retrieve": "tsx src/retrieval.ts",
+    "improve": "tsx src/meta-improve.ts"
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "0.80.6"
