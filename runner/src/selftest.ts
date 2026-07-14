@@ -26,6 +26,7 @@ import {
 	upstreamOutputs,
 } from "./orchestrator.ts";
 import { retrieve } from "./retrieval.ts";
+import { formatWeaNow, withCurrentTime } from "./time-banner.ts";
 import type { NodeRunRecord, WorkflowGraph } from "./types.ts";
 
 let failures = 0;
@@ -311,6 +312,26 @@ console.log("Correctness — generation scope / escalate / loop / renderPrompt")
 	check(
 		"renderPrompt leaves unknown ${foo} literal",
 		renderPrompt("${task} ${foo}", "T", []) === "T ${foo}",
+	);
+}
+
+// ---- Time banner (wall-clock awareness) ------------------------------------
+console.log("Time banner — formatWeaNow / withCurrentTime");
+{
+	const fixed = new Date(2026, 6, 14, 22, 15, 30); // local wall time
+	const iso = formatWeaNow(fixed);
+	check(
+		"formatWeaNow matches ISO-8601 with offset",
+		/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}$/.test(iso),
+	);
+	check("formatWeaNow uses local Y-M-D H:M:S of given Date", iso.startsWith("2026-07-14T22:15:30"));
+	const wrapped = withCurrentTime("BODY");
+	check("withCurrentTime starts with [Current time: prefix", wrapped.startsWith("[Current time:"));
+	check("withCurrentTime retains body", wrapped.includes("BODY"));
+	const wrappedFixed = withCurrentTime("BODY", fixed);
+	check(
+		"withCurrentTime embeds formatWeaNow",
+		wrappedFixed === `[Current time: ${iso}]\n\nBODY`,
 	);
 }
 

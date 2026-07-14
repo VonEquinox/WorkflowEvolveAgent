@@ -13,6 +13,8 @@
  *   WEA_MODEL    | WEA_CONTROL_MODEL
  */
 
+import { withCurrentTime } from "./time-banner.ts";
+
 export interface WeaControlConfig {
 	baseUrl: string;
 	apiKey: string;
@@ -67,7 +69,7 @@ export async function controlComplete(
 		max_tokens: args.maxTokens ?? 4096,
 		temperature: args.temperature ?? 0.2,
 		system: args.system,
-		messages: [{ role: "user", content: args.user }],
+		messages: [{ role: "user", content: withCurrentTime(args.user) }],
 	};
 	const res = await fetch(url, {
 		method: "POST",

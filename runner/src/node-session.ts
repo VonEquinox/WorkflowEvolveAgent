@@ -24,6 +24,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import type { BudgetLedger } from "./budget.ts";
 import { makeRecorder, makeSink, sha256 } from "./recorder-ext.ts";
+import { withCurrentTime } from "./time-banner.ts";
 import type { NodeOutput, NodeRunRecord } from "./types.ts";
 
 export interface AgentCard {
@@ -216,7 +217,7 @@ export async function runNode(params: RunNodeParams): Promise<NodeRunRecord> {
 	const startedAt = new Date().toISOString();
 	let runError: { code: string; message: string; retryable: boolean } | null = null;
 	try {
-		await session.prompt(params.taskPrompt);
+		await session.prompt(withCurrentTime(params.taskPrompt));
 	} catch (err: any) {
 		runError = { code: "SESSION_ERROR", message: String(err?.message ?? err), retryable: true };
 	}
