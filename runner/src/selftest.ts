@@ -27,6 +27,7 @@ import {
 } from "./orchestrator.ts";
 import { retrieve } from "./retrieval.ts";
 import { formatWeaNow, withCurrentTime } from "./time-banner.ts";
+import { validateAgentOutput, validateWorkflowGraph } from "./schemas.ts";
 import type { NodeRunRecord, WorkflowGraph } from "./types.ts";
 
 let failures = 0;
@@ -130,8 +131,8 @@ console.log("Correctness — generation scope / escalate / loop / renderPrompt")
 	// (a) Two-generation records: old attempt must not flip status / upstream.
 	const graphGen: WorkflowGraph = {
 		nodes: [
-			{ id: "implement", kind: "worker", agentCard: "implementer", trigger: "ALL_SUCCESS", promptTemplate: "" },
-			{ id: "verify", kind: "verifier", agentCard: "verifier", trigger: "ALL_SUCCESS", promptTemplate: "" },
+			{ id: "implement", kind: "worker", agentCard: "implementer", trigger: "ALL_SUCCESS", promptTemplate: "test" },
+			{ id: "verify", kind: "verifier", agentCard: "verifier", trigger: "ALL_SUCCESS", promptTemplate: "test" },
 		],
 		edges: [
 			{ id: "e1", from: "@input", to: "implement", kind: "DATA" },
@@ -187,6 +188,48 @@ console.log("Correctness — generation scope / escalate / loop / renderPrompt")
 		up.length === 1 && up[0]!.output?.summary === "new implement" && up[0]!.graphGeneration === 1,
 	);
 
+	// Runtime contracts: malformed verifier output and dangling feedback loops fail closed.
+	check("verifier output requires verdict/checks/must_fix", !validateAgentOutput("verifier", {}).ok);
+	const danglingLoop: WorkflowGraph = {
+		nodes: [
+			{ id: "implement", kind: "worker", agentCard: "implementer", trigger: "ALL_SUCCESS", promptTemplate: "test" },
+			{ id: "verify", kind: "verifier", agentCard: "verifier", trigger: "ALL_SUCCESS", promptTemplate: "test" },
+		],
+		edges: [
+			{ id: "e_in", from: "@input", to: "implement", kind: "DATA" },
+			{ id: "e_iv", from: "implement", to: "verify", kind: "DATA" },
+			{ id: "e_out", from: "verify", to: "@output", kind: "DATA" },
+			{ id: "e_feedback", from: "verify", to: "implement", kind: "FEEDBACK", loopId: "missing" },
+		],
+		loops: [],
+	};
+	check("graph schema rejects feedback edge with missing loop", !validateWorkflowGraph(danglingLoop).ok);
+
+	// A fix-pass implementer must receive the verifier's FEEDBACK output as prompt context.
+	const feedbackGraph: WorkflowGraph = {
+		nodes: [
+			{ id: "inspect", kind: "planner", agentCard: "inspector", trigger: "ALL_SUCCESS", promptTemplate: "test" },
+			{ id: "implement", kind: "worker", agentCard: "implementer", trigger: "ALL_SUCCESS", promptTemplate: "test" },
+			{ id: "verify", kind: "verifier", agentCard: "verifier", trigger: "ALL_SUCCESS", promptTemplate: "test" },
+		],
+		edges: [
+			{ id: "e_in", from: "@input", to: "inspect", kind: "DATA" },
+			{ id: "e_plan", from: "inspect", to: "implement", kind: "DATA" },
+			{ id: "e_iv", from: "implement", to: "verify", kind: "DATA" },
+			{ id: "e_out", from: "verify", to: "@output", kind: "DATA" },
+			{ id: "e_feedback", from: "verify", to: "implement", kind: "FEEDBACK", loopId: "fix" },
+		],
+		loops: [{ id: "fix", bodyNodes: ["implement", "verify"], feedbackEdges: ["e_feedback"], maxIterations: 2 }],
+	};
+	const feedbackRecords = [
+		mk({ nodeId: "inspect", attemptNo: 1, status: "success", output: { summary: "plan" }, endedAt: "2020-01-01T00:00:01.000Z" }),
+		mk({ nodeId: "verify", attemptNo: 1, status: "success", output: { summary: "failed", verdict: "fail", must_fix: ["edge case"] }, endedAt: "2020-01-01T00:00:02.000Z" }),
+	];
+	const firstPassInputs = upstreamOutputs("implement", feedbackGraph, feedbackRecords);
+	const fixPassInputs = upstreamOutputs("implement", feedbackGraph, feedbackRecords, { includeFeedback: true });
+	check("first pass excludes FEEDBACK output", firstPassInputs.every((r) => r.nodeId !== "verify"));
+	check("fix pass includes verifier FEEDBACK output", fixPassInputs.some((r) => r.nodeId === "verify"));
+
 	// (b) escalate with replan unavailable → failure not success (detect + terminal code path).
 	// Pure helper: detectEscalation must fire; the orchestrator terminal-fail path is
 	// covered by ensuring ESCALATE_NO_REPLAN semantics when replan is off — we simulate
@@ -202,7 +245,7 @@ console.log("Correctness — generation scope / escalate / loop / renderPrompt")
 		output: escOut,
 	});
 	const escGraph: WorkflowGraph = {
-		nodes: [{ id: "implement", kind: "worker", agentCard: "implementer", trigger: "ALL_SUCCESS", promptTemplate: "" }],
+		nodes: [{ id: "implement", kind: "worker", agentCard: "implementer", trigger: "ALL_SUCCESS", promptTemplate: "test" }],
 		edges: [
 			{ id: "e1", from: "@input", to: "implement", kind: "DATA" },
 			{ id: "e2", from: "implement", to: "@output", kind: "DATA" },
@@ -228,8 +271,8 @@ console.log("Correctness — generation scope / escalate / loop / renderPrompt")
 	// (c) LOOP_EXHAUSTED with retry requested → feedback source unsuccessful.
 	const loopGraph: WorkflowGraph = {
 		nodes: [
-			{ id: "implement", kind: "worker", agentCard: "implementer", trigger: "ALL_SUCCESS", promptTemplate: "" },
-			{ id: "verify", kind: "verifier", agentCard: "verifier", trigger: "ALL_SUCCESS", promptTemplate: "" },
+			{ id: "implement", kind: "worker", agentCard: "implementer", trigger: "ALL_SUCCESS", promptTemplate: "test" },
+			{ id: "verify", kind: "verifier", agentCard: "verifier", trigger: "ALL_SUCCESS", promptTemplate: "test" },
 		],
 		edges: [
 			{ id: "e_in", from: "@input", to: "implement", kind: "DATA" },

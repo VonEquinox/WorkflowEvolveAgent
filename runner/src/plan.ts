@@ -308,12 +308,19 @@ export async function planWorkflow(opts: PlanOptions): Promise<PlanResult> {
 		"Emit the decision JSON now. You are the only router.",
 	].join("\n");
 
-	const completion = await controlComplete(opts.control, {
-		system: PLANNER_SYSTEM,
-		user,
-		maxTokens: 4096,
-		temperature: 0.2,
-	});
+	let completion;
+	try {
+		completion = await controlComplete(opts.control, {
+			system: PLANNER_SYSTEM,
+			user,
+			maxTokens: 4096,
+			temperature: 0.2,
+		});
+	} catch (err) {
+		log(`[plan] control request failed: ${String((err as Error).message)}; falling back to offline retrieval`);
+		const fb = planOffline(opts);
+		return { ...fb, why: `${fb.why} (control request failed)` };
+	}
 	const usage = completion.usage;
 	const decision = parseJsonObject(completion.text);
 	if (!decision) {

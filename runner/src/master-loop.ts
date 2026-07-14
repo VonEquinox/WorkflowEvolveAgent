@@ -183,12 +183,21 @@ export async function masterReplan(opts: {
 	].join("\n");
 
 	log(`[master] escalation replan via ${opts.control.modelId} (from node ${opts.escalation.nodeId})`);
-	const completion = await controlComplete(opts.control, {
-		system: REPLAN_SYSTEM,
-		user,
-		maxTokens: 4096,
-		temperature: 0.25,
-	});
+	let completion;
+	try {
+		completion = await controlComplete(opts.control, {
+			system: REPLAN_SYSTEM,
+			user,
+			maxTokens: 4096,
+			temperature: 0.25,
+		});
+	} catch (err) {
+		return {
+			ok: false,
+			why: `master replan control request failed: ${String((err as Error).message)}`,
+			usage: { inputTokens: 0, outputTokens: 0 },
+		};
+	}
 	const usage = completion.usage;
 	const decision = parseJsonObject(completion.text);
 	if (!decision) {
@@ -329,12 +338,22 @@ export async function masterImprove(opts: {
 	].join("\n");
 
 	log(`[master] post-run improve via ${opts.control.modelId} for ${opts.templateRef}`);
-	const completion = await controlComplete(opts.control, {
-		system: IMPROVE_SYSTEM,
-		user,
-		maxTokens: 4096,
-		temperature: 0.3,
-	});
+	let completion;
+	try {
+		completion = await controlComplete(opts.control, {
+			system: IMPROVE_SYSTEM,
+			user,
+			maxTokens: 4096,
+			temperature: 0.3,
+		});
+	} catch (err) {
+		return {
+			ok: false,
+			why: `master improve control request failed: ${String((err as Error).message)}`,
+			usage: { inputTokens: 0, outputTokens: 0 },
+			applied: false,
+		};
+	}
 	const usage = completion.usage;
 	const parsed = parseJsonObject(completion.text);
 	if (!parsed) {
@@ -566,12 +585,21 @@ export async function masterHandoff(opts: {
 	].join("\n");
 
 	log(`[master] proactive handoff at ${opts.handoffNodeId} via ${opts.control.modelId}`);
-	const completion = await controlComplete(opts.control, {
-		system: HANDOFF_SYSTEM,
-		user,
-		maxTokens: 4096,
-		temperature: 0.25,
-	});
+	let completion;
+	try {
+		completion = await controlComplete(opts.control, {
+			system: HANDOFF_SYSTEM,
+			user,
+			maxTokens: 4096,
+			temperature: 0.25,
+		});
+	} catch (err) {
+		return {
+			ok: false,
+			why: `master handoff control request failed: ${String((err as Error).message)}`,
+			usage: { inputTokens: 0, outputTokens: 0 },
+		};
+	}
 	const usage = completion.usage;
 	const decision = parseJsonObject(completion.text);
 	if (!decision) {

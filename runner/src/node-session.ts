@@ -25,7 +25,8 @@ import {
 import type { BudgetLedger } from "./budget.ts";
 import { makeRecorder, makeSink, sha256 } from "./recorder-ext.ts";
 import { withCurrentTime } from "./time-banner.ts";
-import type { NodeOutput, NodeRunRecord } from "./types.ts";
+import type { NodeBudget, NodeOutput, NodeRunRecord } from "./types.ts";
+import { validateAgentOutput } from "./schemas.ts";
 
 export interface AgentCard {
 	name: string;
@@ -107,6 +108,7 @@ export interface RunNodeParams {
 	factory: PiWorkerFactory;
 	ledger: BudgetLedger;
 	timing: { plannedAt: string; readyAt: string };
+	nodeBudget?: NodeBudget;
 	/** Ignored: workers always use the default pi model. Kept for API compat. */
 	modelOverride?: string;
 	/** Optional live tap for GUI/progress: tool calls + usage as they happen. */
@@ -172,76 +174,121 @@ export function parseNodeOutput(text: string): NodeOutput | null {
 export async function runNode(params: RunNodeParams): Promise<NodeRunRecord> {
 	const { card, factory, ledger } = params;
 	const sink = makeSink();
-
-	const loader = new DefaultResourceLoader({
-		cwd: params.cwd,
-		agentDir: factory.agentDir,
-		systemPromptOverride: () => card.systemPrompt,
-		appendSystemPromptOverride: () => [],
-		extensionFactories: [
-			{
-				name: `wea-recorder-${params.nodeId}`,
-				factory: makeRecorder(sink, {
-					cwd: params.cwd,
-					repoRoot: params.repoRoot,
-					ledger,
-					onActivity: params.onActivity,
-				}),
-			},
-		],
-	});
-	await loader.reload();
-
-	const sessionManager = SessionManager.inMemory(params.cwd);
-	const { session } = await createAgentSession({
-		cwd: params.cwd,
-		agentDir: factory.agentDir,
-		model: factory.model,
-		authStorage: factory.auth,
-		modelRegistry: factory.registry,
-		resourceLoader: loader,
-		sessionManager,
-		tools: card.tools,
-	});
-
-	let finalText = "";
-	session.subscribe((ev: any) => {
-		if (ev.type === "message_end" && ev.message.role === "assistant") {
-			finalText = ev.message.content
-				.filter((c: any) => c.type === "text")
-				.map((c: any) => c.text)
-				.join("");
-		}
-	});
-
 	const startedAt = new Date().toISOString();
+	let finalText = "";
+	let session: any = null;
+	let sessionId = `failed-${params.nodeId}-${params.attemptNo}`;
+	let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+	let timedOut = false;
 	let runError: { code: string; message: string; retryable: boolean } | null = null;
+
 	try {
-		await session.prompt(withCurrentTime(params.taskPrompt));
+		const loader = new DefaultResourceLoader({
+			cwd: params.cwd,
+			agentDir: factory.agentDir,
+			systemPromptOverride: () => card.systemPrompt,
+			appendSystemPromptOverride: () => [],
+			extensionFactories: [
+				{
+					name: `wea-recorder-${params.nodeId}`,
+					factory: makeRecorder(sink, {
+						cwd: params.cwd,
+						repoRoot: params.repoRoot,
+						ledger,
+						nodeBudget: params.nodeBudget,
+						onActivity: params.onActivity,
+					}),
+				},
+			],
+		});
+		await loader.reload();
+
+		const sessionManager = SessionManager.inMemory(params.cwd);
+		const created = await createAgentSession({
+			cwd: params.cwd,
+			agentDir: factory.agentDir,
+			model: factory.model,
+			authStorage: factory.auth,
+			modelRegistry: factory.registry,
+			resourceLoader: loader,
+			sessionManager,
+			tools: card.tools,
+		});
+		session = created.session;
+		sessionId = String(session.sessionId ?? sessionId);
+		session.subscribe((ev: any) => {
+			if (ev.type === "message_end" && ev.message.role === "assistant") {
+				finalText = ev.message.content
+					.filter((c: any) => c.type === "text")
+					.map((c: any) => c.text)
+					.join("");
+			}
+		});
+
+		const runWallRemaining = Math.max(1, ledger.snapshot().wallTimeRemaining);
+		const nodeWall = params.nodeBudget?.maxWallTimeMs ?? Number.POSITIVE_INFINITY;
+		const wallLimit = Math.min(runWallRemaining, nodeWall);
+		const prompt = session.prompt(withCurrentTime(params.taskPrompt));
+		if (Number.isFinite(wallLimit)) {
+			const timeout = new Promise<never>((_, reject) => {
+				timeoutHandle = setTimeout(() => {
+					timedOut = true;
+					void Promise.resolve(session?.abort?.()).catch(() => {});
+					reject(new Error(`node wall-time limit exceeded after ${wallLimit}ms`));
+				}, wallLimit);
+			});
+			await Promise.race([prompt, timeout]);
+		} else {
+			await prompt;
+		}
 	} catch (err: any) {
-		runError = { code: "SESSION_ERROR", message: String(err?.message ?? err), retryable: true };
+		if (timedOut) {
+			runError = { code: "NODE_TIMEOUT", message: String(err?.message ?? err), retryable: false };
+		} else {
+			runError = { code: "SESSION_ERROR", message: String(err?.message ?? err), retryable: true };
+		}
+	} finally {
+		if (timeoutHandle) clearTimeout(timeoutHandle);
+		if (session) {
+			try {
+				session.dispose();
+			} catch {
+				// A dispose failure must not erase the node's real result/error.
+			}
+		}
 	}
-	const endedAt = new Date().toISOString();
-	const sessionId = session.sessionId as string;
-	session.dispose();
 
-	if (!runError && sink.abortedForBudget) {
-		runError = { code: "BUDGET_EXCEEDED", message: "run budget exhausted; session aborted", retryable: false };
-	}
-
-	const output = runError ? null : parseNodeOutput(finalText);
-	if (!runError && output === null) {
+	if (sink.abortedForBudget) {
 		runError = {
-			code: "OUTPUT_CONTRACT_VIOLATION",
-			message: "final assistant message is not the agreed JSON object",
-			retryable: true,
+			code: "BUDGET_EXCEEDED",
+			message: sink.budgetExceededReason ?? "run or node budget exhausted; session aborted",
+			retryable: false,
 		};
 	}
 
+	let output: NodeOutput | null = finalText ? parseNodeOutput(finalText) : null;
+	if (!runError && output === null) {
+		runError = {
+			code: "OUTPUT_CONTRACT_VIOLATION",
+			message: "final assistant message is not a JSON object",
+			retryable: true,
+		};
+	}
+	if (!runError && output) {
+		const validation = validateAgentOutput(card.name, output);
+		if (!validation.ok) {
+			runError = {
+				code: "OUTPUT_SCHEMA_VIOLATION",
+				message: `output for ${card.name} failed runtime schema: ${validation.errors.join("; ")}`,
+				retryable: true,
+			};
+		}
+	}
+
+	const endedAt = new Date().toISOString();
 	return {
 		nodeId: params.nodeId,
 		attemptNo: params.attemptNo,
-		// Orchestrator stamps the true phase after await; default 0 for standalone callers.
 		graphGeneration: 0,
 		agentCard: card.name,
 		kind: params.kind,

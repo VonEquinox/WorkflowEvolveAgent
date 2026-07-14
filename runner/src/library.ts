@@ -13,6 +13,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import type { AgentCard } from "./node-session.ts";
 import type { WorkflowGraph } from "./types.ts";
+import { validateWorkflowGraph } from "./schemas.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const LIBRARY_ROOT = join(HERE, "..", "..", "library");
@@ -78,8 +79,10 @@ export function loadTemplate(ref: string): LoadedTemplate {
 	const tpl = JSON.parse(readFileSync(path, "utf8")) as RunnerTemplate;
 	if (tpl.id !== baseId) throw new Error(`template id mismatch: file says ${tpl.id}, requested base ${baseId}`);
 	const cards = loadAgentCards();
-	for (const node of tpl.graph.nodes) {
-		if (!cards.has(node.agentCard)) throw new Error(`template ${ref} node ${node.id} needs missing card ${node.agentCard}`);
+	const validation = validateWorkflowGraph(tpl.graph, { allowedAgentCards: new Set(cards.keys()) });
+	if (!validation.ok) {
+		throw new Error(`template ${ref} is invalid:
+  - ${validation.errors.join("\n  - ")}`);
 	}
 	return { graph: tpl.graph, templateVersion: tpl.version, cards };
 }

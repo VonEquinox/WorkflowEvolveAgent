@@ -17,7 +17,7 @@ import { createHash } from "node:crypto";
 import { isAbsolute, relative, resolve } from "node:path";
 import type { BudgetLedger } from "./budget.ts";
 import { toUsageSample } from "./budget.ts";
-import type { ToolCallSample, ToolResultSample, UsageSample } from "./types.ts";
+import type { NodeBudget, ToolCallSample, ToolResultSample, UsageSample } from "./types.ts";
 
 export const sha256 = (data: string | Buffer): string =>
 	"sha256:" + createHash("sha256").update(data).digest("hex");
@@ -78,6 +78,7 @@ export interface RecorderSink {
 	writeSet: Set<string>;
 	usedBash: boolean;
 	abortedForBudget: boolean;
+	budgetExceededReason?: string;
 	redactions: number;
 }
 
@@ -108,6 +109,7 @@ interface RecorderOptions {
 	cwd: string;
 	repoRoot: string;
 	ledger: BudgetLedger;
+	nodeBudget?: NodeBudget;
 	sensitive?: RegExp[];
 	/** optional live tap — fired as events happen, in addition to the sink. */
 	onActivity?: (a: RecorderActivity) => void;
@@ -227,9 +229,19 @@ export function makeRecorder(sink: RecorderSink, opts: RecorderOptions) {
 					outputTokens: sample.output,
 					costMicrounits: sample.costMicrounits,
 				});
-				if (opts.ledger.charge(sample)) {
+				const runExceeded = opts.ledger.charge(sample);
+				const nodeTokens = sink.usage.reduce((a, u) => a + u.input + u.output, 0);
+				const nodeMoney = sink.usage.reduce((a, u) => a + u.costMicrounits, 0);
+				const nodeExceeded =
+					(opts.nodeBudget?.maxTokens !== undefined && nodeTokens > opts.nodeBudget.maxTokens
+						? `node token budget exceeded (${nodeTokens} > ${opts.nodeBudget.maxTokens})`
+						: opts.nodeBudget?.maxMonetaryMicrounits !== undefined && nodeMoney > opts.nodeBudget.maxMonetaryMicrounits
+							? `node money budget exceeded (${nodeMoney} > ${opts.nodeBudget.maxMonetaryMicrounits})`
+							: null);
+				if (runExceeded || nodeExceeded) {
 					sink.abortedForBudget = true;
-					ctx?.abort?.(); // hard budget enforcement (§6)
+					sink.budgetExceededReason = nodeExceeded ?? `run ${runExceeded} budget exceeded`;
+					ctx?.abort?.();
 				}
 			}
 			return undefined;

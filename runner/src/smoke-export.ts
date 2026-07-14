@@ -59,9 +59,9 @@ function record(
 
 const graph: WorkflowGraph = {
 	nodes: [
-		{ id: "inspect", kind: "planner", agentCard: "inspector", trigger: "ALL_SUCCESS", promptTemplate: "" },
-		{ id: "implement", kind: "worker", agentCard: "implementer", trigger: "ALL_SUCCESS", promptTemplate: "" },
-		{ id: "verify", kind: "verifier", agentCard: "verifier", trigger: "ALL_SUCCESS", promptTemplate: "" },
+		{ id: "inspect", kind: "planner", agentCard: "inspector", trigger: "ALL_SUCCESS", promptTemplate: "test" },
+		{ id: "implement", kind: "worker", agentCard: "implementer", trigger: "ALL_SUCCESS", promptTemplate: "test" },
+		{ id: "verify", kind: "verifier", agentCard: "verifier", trigger: "ALL_SUCCESS", promptTemplate: "test" },
 	],
 	edges: [
 		{ id: "e_in", from: "@input", to: "inspect", kind: "DATA" },

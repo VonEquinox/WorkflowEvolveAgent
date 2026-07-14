@@ -30,7 +30,7 @@ import {
 } from "./master-loop.ts";
 import { runNode, PiWorkerFactory, type AgentCard } from "./node-session.ts";
 import { planWorkflow, type PlanResult } from "./plan.ts";
-import type { RecorderActivity } from "./recorder-ext.ts";
+import { sha256, type RecorderActivity } from "./recorder-ext.ts";
 import { retrieve, type TaskCard } from "./retrieval.ts";
 import { buildComplianceTrace, buildPvfTrace, newTraceId, type RunManifest } from "./trace-export.ts";
 import type { NodeOutput, NodeRunRecord, RunBudget, WorkflowGraph } from "./types.ts";
@@ -284,6 +284,49 @@ async function runNodeSim(args: {
 
 // ---- the loop --------------------------------------------------------------------
 
+function failedNodeRecord(args: {
+	nodeId: string;
+	attemptNo: number;
+	graphGeneration: number;
+	kind: NodeRunRecord["kind"];
+	card: AgentCard;
+	plannedAt: string;
+	readyAt: string;
+	error: unknown;
+	code?: string;
+}): NodeRunRecord {
+	const at = new Date().toISOString();
+	return {
+		nodeId: args.nodeId,
+		attemptNo: args.attemptNo,
+		graphGeneration: args.graphGeneration,
+		agentCard: args.card.name,
+		kind: args.kind,
+		sessionId: `failed-${args.nodeId}-${args.attemptNo}`,
+		systemPromptDigest: sha256(args.card.systemPrompt),
+		toolCalls: [],
+		toolResults: [],
+		usage: [],
+		finalText: "",
+		output: null,
+		status: "failure",
+		error: {
+			code: args.code ?? "NODE_RUNTIME_ERROR",
+			message: String((args.error as Error)?.message ?? args.error),
+			retryable: false,
+		},
+		plannedAt: args.plannedAt,
+		readyAt: args.readyAt,
+		startedAt: at,
+		endedAt: at,
+		readSet: [],
+		writeSet: [],
+		observations: [],
+		usedBash: false,
+		redactions: 0,
+	};
+}
+
 export async function executeRun(opts: ExecuteOptions): Promise<ExecuteResult> {
 	const emit = (e: RunEvent) => opts.onEvent?.(e);
 	const maxParallel = opts.maxParallel ?? 3;
@@ -385,11 +428,18 @@ export async function executeRun(opts: ExecuteOptions): Promise<ExecuteResult> {
 
 	const ledger = new BudgetLedger(budget);
 	let factory: PiWorkerFactory | null = null;
+	let factoryError: Error | null = null;
 	let workerModelLabel: string | undefined;
 	if (opts.mode === "live") {
-		factory = new PiWorkerFactory();
-		workerModelLabel = factory.modelLabel;
-		emit({ type: "log", message: `worker model (pi default): ${workerModelLabel}` });
+		try {
+			factory = new PiWorkerFactory();
+			workerModelLabel = factory.modelLabel;
+			emit({ type: "log", message: `worker model (pi default): ${workerModelLabel}` });
+		} catch (err) {
+			factoryError = err as Error;
+			workerModelLabel = "unavailable";
+			emit({ type: "log", message: `worker model unavailable: ${factoryError.message}` });
+		}
 		if (control) {
 			emit({ type: "log", message: `control model (WEA): ${control.modelId} @ ${control.baseUrl}` });
 		} else {
@@ -711,12 +761,12 @@ export async function executeRun(opts: ExecuteOptions): Promise<ExecuteResult> {
 				const taskPrompt = renderPrompt(
 					node.promptTemplate,
 					opts.task,
-					upstreamOutputs(nodeId, activeGraph, records),
+					upstreamOutputs(nodeId, activeGraph, records, { includeFeedback: attemptNo > 1 }),
 					masterPlanContext,
 				);
 				emit({ type: "log", message: `▶ ${nodeId} (attempt ${attemptNo}) card=${card.name}` });
 
-				const promise =
+				const rawPromise =
 					opts.mode === "sim"
 						? runNodeSim({
 								nodeId,
@@ -728,20 +778,49 @@ export async function executeRun(opts: ExecuteOptions): Promise<ExecuteResult> {
 								plannedAt: rt.plannedAt,
 								readyAt: rt.readyAt ?? rt.plannedAt,
 								onActivity,
-							}).then((r) => ({ ...r, graphGeneration }))
-						: runNode({
-								nodeId,
-								attemptNo,
-								kind: node.kind,
-								card,
-								taskPrompt,
-								cwd: opts.repo,
-								repoRoot: opts.repo,
-								factory: factory!,
-								ledger,
-								timing: { plannedAt: rt.plannedAt, readyAt: rt.readyAt ?? rt.plannedAt },
-								onActivity,
-							}).then((r) => ({ ...r, graphGeneration }));
+							})
+						: factory
+							? runNode({
+									nodeId,
+									attemptNo,
+									kind: node.kind,
+									card,
+									taskPrompt,
+									cwd: opts.repo,
+									repoRoot: opts.repo,
+									factory,
+									ledger,
+									nodeBudget: node.budget,
+									timing: { plannedAt: rt.plannedAt, readyAt: rt.readyAt ?? rt.plannedAt },
+									onActivity,
+								})
+							: Promise.resolve(
+									failedNodeRecord({
+										nodeId,
+										attemptNo,
+										graphGeneration,
+										kind: node.kind,
+										card,
+										plannedAt: rt.plannedAt,
+										readyAt: rt.readyAt ?? rt.plannedAt,
+										error: factoryError ?? new Error("worker factory unavailable"),
+										code: "WORKER_FACTORY_ERROR",
+									}),
+								);
+				const promise = rawPromise
+					.then((r) => ({ ...r, graphGeneration }))
+					.catch((err) =>
+						failedNodeRecord({
+							nodeId,
+							attemptNo,
+							graphGeneration,
+							kind: node.kind,
+							card,
+							plannedAt: rt.plannedAt,
+							readyAt: rt.readyAt ?? rt.plannedAt,
+							error: err,
+						}),
+					);
 				inFlight.set(nodeId, promise);
 			}
 
@@ -982,19 +1061,28 @@ export async function executeRun(opts: ExecuteOptions): Promise<ExecuteResult> {
 	// ---- post-run master: process verify + graph improve ----
 	let improveMeta: Awaited<ReturnType<typeof masterImprove>> | undefined;
 	if (enableImprove && control) {
-		improveMeta = await masterImprove({
-			control,
-			task: opts.task,
-			templateRef,
-			templateVersion,
-			graph,
-			status,
-			records,
-			escalations,
-			persist: opts.persistImprove !== false,
-			apply: opts.persistImprove !== false,
-			onLog: (message) => emit({ type: "log", message }),
-		});
+		try {
+			improveMeta = await masterImprove({
+				control,
+				task: opts.task,
+				templateRef,
+				templateVersion,
+				graph,
+				status,
+				records,
+				escalations,
+				persist: opts.persistImprove !== false,
+				apply: opts.persistImprove !== false,
+				onLog: (message) => emit({ type: "log", message }),
+			});
+		} catch (err) {
+			improveMeta = {
+				ok: false,
+				why: `post-run improve failed without affecting task result: ${String((err as Error).message)}`,
+				usage: { inputTokens: 0, outputTokens: 0 },
+				applied: false,
+			};
+		}
 		controlUsageAcc = mergeUsage(controlUsageAcc, improveMeta.usage);
 		emit({
 			type: "master_improve",
@@ -1125,10 +1213,22 @@ function latestRecordInGeneration(
 	}).at(-1);
 }
 
-export function upstreamOutputs(nodeId: string, graph: WorkflowGraph, records: NodeRunRecord[]): NodeRunRecord[] {
-	const producers = graph.edges
-		.filter((e) => e.to === nodeId && e.kind !== "FEEDBACK" && e.from !== "@input")
-		.map((e) => e.from);
+export function upstreamOutputs(
+	nodeId: string,
+	graph: WorkflowGraph,
+	records: NodeRunRecord[],
+	opts: { includeFeedback?: boolean } = {},
+): NodeRunRecord[] {
+	const producers = [...new Set(
+		graph.edges
+			.filter(
+				(e) =>
+					e.to === nodeId &&
+					e.from !== "@input" &&
+					(e.kind !== "FEEDBACK" || opts.includeFeedback === true),
+			)
+			.map((e) => e.from),
+	)];
 	// Scope to the active generation so a reused nodeId from a prior replan/handoff
 	// phase cannot feed a later node with stale output.
 	const gen = activeGraphGeneration(records);

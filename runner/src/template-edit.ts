@@ -20,6 +20,7 @@
  */
 
 import type { GraphEdge, NodeKind, WorkflowGraph } from "./types.ts";
+import { validateWorkflowGraph, type GraphValidationOptions } from "./schemas.ts";
 
 export interface RunnerTemplateDoc {
 	id: string;
@@ -64,90 +65,12 @@ export interface GateResult {
 
 // ---- structural executability (the ONLY thing the gate enforces) ------------
 
-/** Public structural check (used by pre-run cold-start planner too). */
-export function structuralIssuesOfGraph(graph: WorkflowGraph): string[] {
-	return structuralIssues(graph);
-}
-
-function structuralIssues(graph: WorkflowGraph): string[] {
-	const issues: string[] = [];
-	const ids = new Set(graph.nodes.map((n) => n.id));
-	if (graph.nodes.length === 0) issues.push("template has no nodes");
-
-	// duplicate ids
-	if (ids.size !== graph.nodes.length) issues.push("duplicate node id");
-	const edgeIds = new Set(graph.edges.map((e) => e.id));
-	if (edgeIds.size !== graph.edges.length) issues.push("duplicate edge id");
-
-	// edges must reference existing endpoints
-	for (const e of graph.edges) {
-		if (e.from !== "@input" && !ids.has(e.from)) issues.push(`edge ${e.id} from unknown node ${e.from}`);
-		if (e.to !== "@output" && !ids.has(e.to)) issues.push(`edge ${e.id} to unknown node ${e.to}`);
-		if (e.kind === "FEEDBACK" && !e.loopId) issues.push(`feedback edge ${e.id} must name a loop`);
-	}
-	// loops must cover live nodes/edges
-	for (const loop of graph.loops) {
-		for (const nid of loop.bodyNodes) if (!ids.has(nid)) issues.push(`loop ${loop.id} references unknown node ${nid}`);
-		for (const eid of loop.feedbackEdges) if (!edgeIds.has(eid)) issues.push(`loop ${loop.id} references unknown edge ${eid}`);
-		if (loop.maxIterations < 1) issues.push(`loop ${loop.id} must allow >=1 iteration`);
-	}
-	// @input must reach @output through the executable (non-FEEDBACK) subgraph
-	if (!outputReachable(graph)) issues.push("@output is not reachable from @input");
-	// executable graph must be acyclic outside declared FEEDBACK edges
-	if (hasCycleIgnoringFeedback(graph)) issues.push("graph contains a cycle outside a FEEDBACK loop");
-	// no orphaned node (a node the scheduler could never make ready)
-	for (const n of graph.nodes) {
-		const parents = graph.edges.filter((e) => e.to === n.id && e.kind !== "FEEDBACK");
-		if (parents.length === 0) issues.push(`node ${n.id} has no incoming edge (orphaned)`);
-	}
-	return issues;
-}
-
-function outputReachable(graph: WorkflowGraph): boolean {
-	const adj = new Map<string, string[]>();
-	for (const e of graph.edges) {
-		if (e.kind === "FEEDBACK") continue;
-		if (!adj.has(e.from)) adj.set(e.from, []);
-		adj.get(e.from)!.push(e.to);
-	}
-	const seen = new Set<string>();
-	const stack = ["@input"];
-	while (stack.length) {
-		const cur = stack.pop()!;
-		if (cur === "@output") return true;
-		if (seen.has(cur)) continue;
-		seen.add(cur);
-		for (const nx of adj.get(cur) ?? []) stack.push(nx);
-	}
-	return false;
-}
-
-function hasCycleIgnoringFeedback(graph: WorkflowGraph): boolean {
-	const indeg = new Map<string, number>();
-	const adj = new Map<string, string[]>();
-	for (const n of graph.nodes) {
-		indeg.set(n.id, 0);
-		adj.set(n.id, []);
-	}
-	for (const e of graph.edges) {
-		if (e.kind === "FEEDBACK" || e.from.startsWith("@") || e.to.startsWith("@")) continue;
-		// Dangling edges (endpoint not a live node) are reported separately by the
-		// edge-endpoint check; ignore them here so cycle detection can't crash.
-		if (!adj.has(e.from) || !indeg.has(e.to)) continue;
-		adj.get(e.from)!.push(e.to);
-		indeg.set(e.to, indeg.get(e.to)! + 1);
-	}
-	const ready = [...indeg.entries()].filter(([, d]) => d === 0).map(([id]) => id);
-	let visited = 0;
-	while (ready.length) {
-		const cur = ready.pop()!;
-		visited += 1;
-		for (const nx of adj.get(cur)!) {
-			indeg.set(nx, indeg.get(nx)! - 1);
-			if (indeg.get(nx) === 0) ready.push(nx);
-		}
-	}
-	return visited !== graph.nodes.length;
+/** Public structural check used by every graph ingress path. */
+export function structuralIssuesOfGraph(
+	graph: WorkflowGraph,
+	opts: GraphValidationOptions = {},
+): string[] {
+	return validateWorkflowGraph(graph, opts).errors;
 }
 
 /**
@@ -160,7 +83,10 @@ export function gateProposal(template: RunnerTemplateDoc, proposal: Proposal): G
 	if (proposal.target_template !== template.id) {
 		violations.push(`proposal targets ${proposal.target_template}, not ${template.id}`);
 	}
-	if (proposal.edits.length === 0) {
+	if (proposal.target_version !== template.version) {
+		violations.push(`proposal targets version ${proposal.target_version}, not current ${template.version}`);
+	}
+	if (!Array.isArray(proposal.edits) || proposal.edits.length === 0) {
 		violations.push("proposal has no edits");
 	}
 	if (violations.length === 0) {
@@ -170,7 +96,7 @@ export function gateProposal(template: RunnerTemplateDoc, proposal: Proposal): G
 		} catch (err) {
 			return { ok: false, violations: [`edit could not be applied: ${(err as Error).message}`] };
 		}
-		violations.push(...structuralIssues(next));
+		violations.push(...structuralIssuesOfGraph(next));
 	}
 	return { ok: violations.length === 0, violations };
 }

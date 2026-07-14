@@ -16,6 +16,7 @@
  */
 
 import { TERMINAL_STATES } from "./types.ts";
+import { validateWorkflowGraph } from "./schemas.ts";
 import type { BoundedLoop, GraphEdge, GraphNode, NodeState, WorkflowGraph } from "./types.ts";
 
 type EdgeStatus = "PENDING" | "SUCCESS" | "DONE_UNSUCCESSFUL";
@@ -65,6 +66,11 @@ export class GraphScheduler {
 	private loopRetry: LoopRetryPredicate;
 
 	constructor(graph: WorkflowGraph, loopRetry?: LoopRetryPredicate) {
+		const validation = validateWorkflowGraph(graph);
+		if (!validation.ok) {
+			throw new Error(`invalid workflow graph:
+  - ${validation.errors.join("\n  - ")}`);
+		}
 		this.loopRetry = loopRetry ?? defaultLoopRetry;
 		for (const node of graph.nodes) {
 			if (this.nodes.has(node.id)) throw new Error(`duplicate node id: ${node.id}`);

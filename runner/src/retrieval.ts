@@ -20,6 +20,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { RunnerTemplate } from "./library.ts";
+import { validateWorkflowGraph } from "./schemas.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const TEMPLATES_DIR = join(HERE, "..", "..", "library", "templates");
@@ -79,6 +80,11 @@ export function loadTemplateCatalog(dir = TEMPLATES_DIR): RunnerTemplate[] {
 		if (!file.endsWith(".json")) continue;
 		if (file.includes("@")) continue; // challengers are not catalog entries
 		const tpl = JSON.parse(readFileSync(join(dir, file), "utf8")) as CatalogTemplate;
+		const validation = validateWorkflowGraph(tpl.graph);
+		if (!validation.ok) {
+			throw new Error(`catalog template ${file} is invalid:
+  - ${validation.errors.join("\n  - ")}`);
+		}
 		// Stage subgraphs (catalog:false) are loadable by id but not offline-ranked.
 		if (tpl.catalog === false) continue;
 		out.push(tpl);
