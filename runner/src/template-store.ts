@@ -20,6 +20,17 @@ function writeExclusive(path: string, value: unknown): void {
 	writeFileSync(path, JSON.stringify(value, null, 2) + "\n", { flag: "wx" });
 }
 
+/** Publish one exact challenger version and fail with EEXIST on collision. */
+export function publishExactVersionedTemplate(
+	doc: RunnerTemplateDoc,
+	dir: string,
+): { doc: RunnerTemplateDoc; path: string } {
+	parseSemver(doc.version);
+	const path = join(dir, `${doc.id}@${doc.version}.json`);
+	writeExclusive(path, doc);
+	return { doc, path };
+}
+
 /** Publish a challenger without ever replacing an existing release. */
 export function publishVersionedTemplate(
 	doc: RunnerTemplateDoc,

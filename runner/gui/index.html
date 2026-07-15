@@ -7,13 +7,17 @@
 <link rel="stylesheet" href="/style.css" />
 </head>
 <body>
-<div class="app">
+<div class="app" id="app" data-view="run">
 
   <header class="topbar">
     <div class="brand">
       <span class="brand-mark">▣</span>
       <span class="brand-name">WEA</span>
       <span class="brand-sub">workflow evolve agent</span>
+    </div>
+    <div class="view-switch" aria-label="workspace mode">
+      <button type="button" class="view-btn selected" id="runViewBtn">Run</button>
+      <button type="button" class="view-btn" id="editViewBtn">Edit graph</button>
     </div>
     <div class="run-chip" id="runChip" data-state="idle">
       <span class="chip-icon" id="chipIcon">○</span>
@@ -28,26 +32,68 @@
   </header>
 
   <aside class="panel">
-    <form id="runForm">
+    <label class="field">
+      <span class="field-label">Workflow template</span>
+      <select id="template">
+        <option value="auto">auto — control/retrieval picks</option>
+      </select>
+      <span class="field-hint" id="templateHint"></span>
+    </label>
+
+    <form id="runForm" class="run-panel">
       <label class="field">
         <span class="field-label">Task</span>
-        <textarea id="task" rows="5" placeholder="e.g. node test.js fails with 'slugify must be exported' — implement and export slugify(s) in strutil.js so tests pass" required></textarea>
-      </label>
-      <label class="field">
-        <span class="field-label">Workflow template</span>
-        <select id="template">
-          <option value="auto">auto — retrieval picks</option>
-        </select>
+        <textarea id="task" rows="5" placeholder="e.g. node test.js fails with 'slugify must be exported' — implement and export slugify(s) so tests pass" required></textarea>
       </label>
       <label class="field">
         <span class="field-label">Target repo</span>
-        <input id="repo" type="text" placeholder="/tmp/wea-sandbox2" />
+        <input id="repo" type="text" placeholder="/path/to/git/repo" />
       </label>
       <p class="field-hint">Runs use real pi workers in an isolated Git worktree. The source checkout is not modified automatically.</p>
-      <button type="submit" class="run-btn" id="runBtn">Run workflow</button>
+      <button type="submit" class="primary-btn" id="runBtn">Run workflow</button>
     </form>
 
-    <div class="legend">
+    <section id="editorPanel" class="editor-panel" hidden>
+      <div class="button-row">
+        <button type="button" class="secondary-btn" id="newGraphBtn">New graph</button>
+        <button type="button" class="secondary-btn" id="editTemplateBtn">Edit selected</button>
+      </div>
+
+      <div id="editorFields" hidden>
+        <div class="editor-source" id="editorSource">new template</div>
+        <label class="field">
+          <span class="field-label">Template id</span>
+          <input id="editorTemplateId" type="text" maxlength="64" />
+        </label>
+        <label class="field">
+          <span class="field-label">Summary</span>
+          <textarea id="editorSummary" rows="3" maxlength="2000"></textarea>
+        </label>
+
+        <div class="tool-grid">
+          <button type="button" class="secondary-btn" id="addNodeBtn">＋ Node</button>
+          <button type="button" class="secondary-btn" id="connectBtn">↗ Connect</button>
+          <button type="button" class="secondary-btn" id="addLoopBtn">↺ Loop</button>
+          <button type="button" class="danger-btn" id="deleteSelectedBtn" disabled>Delete</button>
+        </div>
+
+        <div class="loop-list-wrap">
+          <span class="field-label">Loops</span>
+          <div id="loopList" class="loop-list"><span class="field-hint">none</span></div>
+        </div>
+
+        <div class="validation" id="validationBox" data-state="pending">
+          <div class="validation-title" id="validationTitle">Not validated</div>
+          <ul id="validationErrors"></ul>
+        </div>
+        <div class="button-row">
+          <button type="button" class="secondary-btn" id="validateGraphBtn">Validate</button>
+          <button type="button" class="primary-btn" id="saveGraphBtn" disabled>Save immutable version</button>
+        </div>
+      </div>
+    </section>
+
+    <div class="legend" id="runLegend">
       <span class="legend-title">node status</span>
       <div class="legend-row"><span class="dot s-waiting"></span>waiting</div>
       <div class="legend-row"><span class="dot s-ready"></span>ready</div>
@@ -56,27 +102,35 @@
       <div class="legend-row"><span class="dot s-failed"></span>failed</div>
       <div class="legend-row"><span class="edge-sample"></span>feedback loop</div>
     </div>
+
+    <div class="legend editor-legend" id="editorLegend" hidden>
+      <span class="legend-title">editor controls</span>
+      <div class="legend-row">Drag a node to save its layout.</div>
+      <div class="legend-row">Connect: source port → target port.</div>
+      <div class="legend-row"><span class="edge-sample"></span>FEEDBACK edges bind to a loop.</div>
+    </div>
   </aside>
 
   <main class="canvas-wrap">
     <div class="canvas-head">
       <span id="graphTitle" class="graph-title">select a template to preview its graph</span>
       <span id="graphMeta" class="graph-meta"></span>
+      <span id="editorNotice" class="editor-notice" hidden></span>
     </div>
     <div class="canvas" id="canvas">
-      <svg id="dag" width="100%" preserveAspectRatio="xMidYMid meet"></svg>
-      <div class="canvas-empty" id="canvasEmpty">no graph yet — pick a template or press Run</div>
+      <svg id="dag" width="100%" preserveAspectRatio="xMidYMid meet" aria-label="workflow graph"></svg>
+      <div class="canvas-empty" id="canvasEmpty">no graph yet — pick a template or create one in Edit graph</div>
     </div>
   </main>
 
-  <section class="feed-wrap">
+  <section class="feed-wrap" id="feedWrap">
     <div class="feed-head">activity</div>
     <div class="feed" id="feed"></div>
   </section>
 
   <aside class="detail" id="detail" hidden>
     <div class="detail-head">
-      <span class="detail-title" id="detailTitle">node</span>
+      <span class="detail-title" id="detailTitle">element</span>
       <button class="detail-close" id="detailClose" aria-label="close">✕</button>
     </div>
     <div class="detail-body" id="detailBody"></div>

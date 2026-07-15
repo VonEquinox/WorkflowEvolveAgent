@@ -37,6 +37,14 @@ worktree. The GUI and CLI drive the same orchestrator (`src/orchestrator.ts`).
 `WEA_*` is only for the control plane; when absent, template selection falls
 back to offline retrieval while workers still use the configured pi default.
 
+Switch the GUI to **Edit graph** to create a workflow from a blank canvas or
+revise the latest saved template. Nodes are draggable; source/target ports create
+edges; the inspector edits node roles, prompts, budgets, DATA/CONTROL/FEEDBACK
+edges, and bounded loops. The server runs the same runtime Graph Schema before
+saving. New graphs become immutable `1.0.0` base files; edits become exact patch
+revisions and never overwrite an existing template. Editor positions are stored
+as optional top-level `ui.positions` metadata and are ignored by the scheduler.
+
 `--template auto` (the default) lets **retrieval** pick the workflow from the
 task; pass an explicit id (`--template t2-bugfix`) to override. If a family has a
 promoted champion version, the runner uses it automatically.
@@ -60,12 +68,14 @@ src/
   node-session.ts  node ↔ AgentSession (per-node prompt + model override; tolerant
                    JSON-output parsing)
   library.ts       load library/templates/*.json + library/agents/*.md
+  template-service.ts GUI list/validate/create/revise with immutable versions
   trace-export.ts  RunManifest → dual trace surface (compliance + PVF projection)
   orchestrator.ts  the real execution loop as an event-emitting function;
                    both the CLI and the GUI drive it
   workspace.ts     detached per-run worktree + review patch capture
   run.ts           CLI front over the orchestrator
   gui-server.ts    local web UI server: static + JSON API + SSE event stream
+  gui/editor-model.js pure graph mutations used by the visual editor + tests
   rebuild.ts       rebuild traces from a manifest offline
   smoke-export.ts  offline: synthetic manifest → both trace surfaces
 

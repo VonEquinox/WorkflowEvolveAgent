@@ -19,7 +19,7 @@
  * winning the measurement, not from being permitted.
  */
 
-import type { GraphEdge, NodeKind, WorkflowGraph } from "./types.ts";
+import type { GraphEdge, NodeKind, WorkflowGraph, WorkflowTemplateUi } from "./types.ts";
 import { validateWorkflowGraph, type GraphValidationOptions } from "./schemas.ts";
 import { bumpPatch } from "./template-store.ts";
 
@@ -27,6 +27,10 @@ export interface RunnerTemplateDoc {
 	id: string;
 	version: string;
 	summary: string;
+	/** false marks an internal stage graph that offline retrieval must not rank. */
+	catalog?: boolean;
+	/** Editor-only layout metadata; not part of executable WorkflowGraph IR. */
+	ui?: WorkflowTemplateUi;
 	graph: WorkflowGraph;
 }
 
@@ -185,10 +189,19 @@ export function applyProposal(template: RunnerTemplateDoc, proposal: Proposal): 
 	const gate = gateProposal(template, proposal);
 	if (!gate.ok) throw new Error(`proposal does not produce a runnable template:\n  - ${gate.violations.join("\n  - ")}`);
 	const nextGraph = applyEditsToGraph(structuredClone(template.graph), proposal.edits);
+	const liveNodeIds = new Set(nextGraph.nodes.map((node) => node.id));
+	const ui = template.ui
+		? {
+				positions: Object.fromEntries(
+					Object.entries(template.ui.positions).filter(([nodeId]) => liveNodeIds.has(nodeId)),
+				),
+			}
+		: undefined;
 	return {
-		id: template.id,
+		...template,
 		version: bumpVersion(template.version),
 		summary: `${template.summary} [challenger: ${proposal.edits.map((e) => e.op).join(", ")}]`,
 		graph: nextGraph,
+		ui,
 	};
 }

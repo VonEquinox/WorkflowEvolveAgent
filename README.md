@@ -109,6 +109,7 @@ Offline BM25 retrieval is **only** a fallback when `WEA_*` is missing or
 | **Self-computed digests** | Tool results hashed (pi does not provide digests) |
 | **CLI runner** | `run.ts` over shared orchestrator |
 | **Web GUI** | Live DAG + per-agent activity via SSE (`npm run gui`) |
+| **Visual graph editor** | Drag nodes, connect ports, configure full loops/edges, validate and save immutable template revisions |
 | **Per-run Git worktree** | Real workers edit an isolated checkout; source is never auto-merged |
 
 ### 1.2 Selection & reuse (L3)

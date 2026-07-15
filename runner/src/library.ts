@@ -12,16 +12,19 @@ import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import type { AgentCard } from "./node-session.ts";
-import type { WorkflowGraph } from "./types.ts";
+import type { WorkflowGraph, WorkflowTemplateUi } from "./types.ts";
 import { validateWorkflowGraph } from "./schemas.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const LIBRARY_ROOT = join(HERE, "..", "..", "library");
+export const LIBRARY_ROOT = join(HERE, "..", "..", "library");
+export const TEMPLATES_DIR = join(LIBRARY_ROOT, "templates");
 
 export interface RunnerTemplate {
 	id: string;
 	version: string;
 	summary: string;
+	catalog?: boolean;
+	ui?: WorkflowTemplateUi;
 	graph: WorkflowGraph;
 }
 
@@ -67,6 +70,22 @@ export function loadAgentCards(): Map<string, AgentCard> {
 	return cards;
 }
 
+const TEMPLATE_REF_RE = /^[A-Za-z][A-Za-z0-9_.-]{0,63}(?:@\d+\.\d+\.\d+)?$/;
+
+export function validateTemplateRef(ref: string): void {
+	if (!TEMPLATE_REF_RE.test(ref)) throw new Error(`invalid template ref ${JSON.stringify(ref)}`);
+}
+
+/** Load and validate the complete template document, including optional GUI metadata. */
+export function loadTemplateDocument(ref: string, dir = TEMPLATES_DIR): RunnerTemplate {
+	validateTemplateRef(ref);
+	const baseId = ref.split("@", 1)[0]!;
+	const path = join(dir, `${ref}.json`);
+	const tpl = JSON.parse(readFileSync(path, "utf8")) as RunnerTemplate;
+	if (tpl.id !== baseId) throw new Error(`template id mismatch: file says ${tpl.id}, requested base ${baseId}`);
+	return tpl;
+}
+
 /**
  * Load a template by id. Accepts a bare id ("t3-complex" → t3-complex.json) or a
  * versioned ref ("t3-complex@1.0.1" → t3-complex@1.0.1.json), so A/B tests can
@@ -74,10 +93,7 @@ export function loadAgentCards(): Map<string, AgentCard> {
  * id (versions are distinguished by `version`), so we validate against the base.
  */
 export function loadTemplate(ref: string): LoadedTemplate {
-	const baseId = ref.split("@", 1)[0]!;
-	const path = join(LIBRARY_ROOT, "templates", `${ref}.json`);
-	const tpl = JSON.parse(readFileSync(path, "utf8")) as RunnerTemplate;
-	if (tpl.id !== baseId) throw new Error(`template id mismatch: file says ${tpl.id}, requested base ${baseId}`);
+	const tpl = loadTemplateDocument(ref);
 	const cards = loadAgentCards();
 	const validation = validateWorkflowGraph(tpl.graph, { allowedAgentCards: new Set(cards.keys()) });
 	if (!validation.ok) {

@@ -119,6 +119,7 @@ runs/<时间戳>-<id>/
 | **自算 content digest** | pi 不提供 digest，WEA 自哈希 |
 | **CLI** | `run.ts` |
 | **Web GUI** | SSE 实时 DAG + 每 agent 活动 |
+| **可视化图编辑器** | 拖动节点、端口连线、配置完整边/loop，校验后保存不可覆盖的模板版本 |
 | **每次运行独立 worktree** | 真 worker 只改隔离检出，不自动合并源工作区 |
 
 ### 1.2 选择与复用（L3）

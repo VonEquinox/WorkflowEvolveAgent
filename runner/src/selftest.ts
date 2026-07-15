@@ -31,8 +31,9 @@ import { planOffline } from "./plan.ts";
 import { formatWeaNow, withCurrentTime } from "./time-banner.ts";
 import { captureWorkspaceResult, prepareIsolatedWorkspace, removeIsolatedWorkspace } from "./workspace.ts";
 import { validateAgentOutput, validateWorkflowGraph } from "./schemas.ts";
-import { gateProposal, type RunnerTemplateDoc } from "./template-edit.ts";
+import { applyProposal, gateProposal, type RunnerTemplateDoc } from "./template-edit.ts";
 import { publishBaseTemplate, publishVersionedTemplate } from "./template-store.ts";
+import { listTemplateDocuments, saveTemplateDocument, TemplateRequestError, validateEditableGraph } from "./template-service.ts";
 import { buildComplianceTrace, buildPvfTrace, newTraceId, type RunManifest } from "./trace-export.ts";
 import { controlComplete, loadWeaControlConfig } from "./wea-control.ts";
 import type { NodeRunRecord, WorkflowGraph } from "./types.ts";
@@ -436,6 +437,64 @@ console.log("Templates — immutable versions / stale target rejection");
 		edits: [{ op: "edit_prompt", node: "work", new_prompt: "new" }],
 	});
 	check("proposal gate rejects stale target_version", !stale.ok && stale.violations.some((v) => v.includes("not current")));
+	const withUi: RunnerTemplateDoc = { ...doc, ui: { positions: { work: { x: 1, y: 2 }, ghost: { x: 3, y: 4 } } } };
+	const edited = applyProposal(withUi, {
+		schema: "wea.proposal/v2", target_template: doc.id, target_version: doc.version,
+		edits: [{ op: "edit_prompt", node: "work", new_prompt: "new" }],
+	});
+	check("template evolution drops stale editor positions", !!edited.ui?.positions.work && !("ghost" in edited.ui.positions));
+}
+
+// ---- GUI template editor service ------------------------------------------
+console.log("GUI editor — validate / create / revise / stale conflict");
+{
+	const dir = mkdtempSync(join(tmpdir(), "wea-gui-templates-"));
+	const allowed = new Set(["inspector", "implementer", "verifier", "master-handoff"]);
+	const graph: WorkflowGraph = {
+		nodes: [
+			{ id: "inspect", kind: "planner", agentCard: "inspector", trigger: "ALL_SUCCESS", promptTemplate: "Task: ${task}" },
+			{ id: "implement", kind: "worker", agentCard: "implementer", trigger: "ALL_SUCCESS", promptTemplate: "${task}\n${upstream}" },
+		],
+		edges: [
+			{ id: "in", from: "@input", to: "inspect", kind: "DATA" },
+			{ id: "plan", from: "inspect", to: "implement", kind: "DATA" },
+			{ id: "out", from: "implement", to: "@output", kind: "DATA" },
+		],
+		loops: [],
+	};
+	const ui = { positions: { inspect: { x: 100, y: 80 }, implement: { x: 360, y: 80 } } };
+	check("editor validation accepts executable graph + layout", validateEditableGraph(graph, ui, allowed).ok);
+	check(
+		"editor validation rejects unknown agent card",
+		!validateEditableGraph({ ...graph, nodes: [{ ...graph.nodes[0]!, agentCard: "missing" }, graph.nodes[1]!] }, ui, allowed).ok,
+	);
+	const created = saveTemplateDocument(
+		{ operation: "create", id: "gui-flow", summary: "GUI flow", graph, ui },
+		{ dir, allowedAgentCards: allowed },
+	);
+	check("GUI create publishes immutable base 1.0.0", created.template.ref === "gui-flow" && created.template.version === "1.0.0");
+	check("GUI create persists editor positions", created.template.ui?.positions.inspect?.x === 100);
+	const revised = saveTemplateDocument(
+		{
+			operation: "revise", sourceRef: created.template.ref, sourceVersion: created.template.version,
+			summary: "GUI flow revision", graph: { ...graph, nodes: graph.nodes.map((n) => n.id === "implement" ? { ...n, promptTemplate: "revised ${task}" } : n) }, ui,
+		},
+		{ dir, allowedAgentCards: allowed },
+	);
+	check("GUI revise publishes exact next patch", revised.template.ref === "gui-flow@1.0.1" && revised.template.version === "1.0.1");
+	let staleStatus = 0;
+	try {
+		saveTemplateDocument(
+			{ operation: "revise", sourceRef: created.template.ref, sourceVersion: created.template.version, summary: "stale", graph, ui },
+			{ dir, allowedAgentCards: allowed },
+		);
+	} catch (err) {
+		staleStatus = err instanceof TemplateRequestError ? err.status : 500;
+	}
+	check("GUI stale revision is rejected with conflict", staleStatus === 409);
+	const listed = listTemplateDocuments(dir, allowed);
+	check("template listing exposes base and versions", listed.map((t) => t.ref).join(",") === "gui-flow,gui-flow@1.0.1");
+	check("only newest revision is marked latest", listed.filter((t) => t.isLatest).map((t) => t.ref).join(",") === "gui-flow@1.0.1");
 }
 
 // ---- Control transport resilience ------------------------------------------

@@ -5,7 +5,10 @@
  * same orchestrator the CLI uses:
  *
  *   GET  /api/health              → control/worker execution hints
- *   GET  /api/templates           → catalog incl. graph structure (for preview)
+ *   GET  /api/templates           → base + versioned workflow template documents
+ *   GET  /api/agent-cards         → installed node roles available to the editor
+ *   POST /api/graphs/validate     → full runtime Graph Schema validation
+ *   POST /api/templates           → immutable create/revise from the graph editor
  *   POST /api/run                 → { task, template, repo } → { runId }
  *   GET  /api/run/:id/events      → SSE; replays buffered events, then live
  *   GET  /api/run/:id             → snapshot { events } (refresh safety)
@@ -22,8 +25,14 @@ import { readFileSync, existsSync } from "node:fs";
 import { dirname, extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 import { executeRun, resolveTemplateRef, type RunEvent } from "./orchestrator.ts";
-import { loadTemplate } from "./library.ts";
-import { loadTemplateCatalog } from "./retrieval.ts";
+import { loadAgentCards, loadTemplate } from "./library.ts";
+import {
+	listTemplateDocuments,
+	saveTemplateDocument,
+	TemplateRequestError,
+	validateEditableGraph,
+	type TemplateSaveRequest,
+} from "./template-service.ts";
 import { loadWeaControlConfig } from "./wea-control.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -89,6 +98,14 @@ async function readBody(req: IncomingMessage): Promise<string> {
 	return body;
 }
 
+async function readJsonBody<T>(req: IncomingMessage): Promise<T> {
+	try {
+		return JSON.parse((await readBody(req)) || "{}") as T;
+	} catch {
+		throw new TemplateRequestError("request body must be valid JSON");
+	}
+}
+
 function serveStatic(res: ServerResponse, urlPath: string): void {
 	const rel = urlPath === "/" ? "index.html" : urlPath.slice(1);
 	const file = normalize(join(GUI_DIR, rel));
@@ -118,21 +135,33 @@ const server = createServer(async (req, res) => {
 		}
 
 		if (req.method === "GET" && path === "/api/templates") {
-			const catalog = loadTemplateCatalog().map((t) => ({
-				id: t.id,
-				version: t.version,
-				summary: t.summary,
-				graph: t.graph,
-			}));
-			return json(res, 200, { templates: catalog });
+			return json(res, 200, { templates: listTemplateDocuments() });
+		}
+
+		if (req.method === "GET" && path === "/api/agent-cards") {
+			const cards = [...loadAgentCards().values()]
+				.map((card) => ({ name: card.name, description: card.description, tools: card.tools ?? [] }))
+				.sort((a, b) => a.name.localeCompare(b.name));
+			return json(res, 200, { cards });
+		}
+
+		if (req.method === "POST" && path === "/api/graphs/validate") {
+			const body = await readJsonBody<{ graph?: unknown; ui?: unknown }>(req);
+			return json(res, 200, validateEditableGraph(body.graph, body.ui));
+		}
+
+		if (req.method === "POST" && path === "/api/templates") {
+			const body = await readJsonBody<TemplateSaveRequest>(req);
+			const saved = saveTemplateDocument(body);
+			return json(res, 201, saved);
 		}
 
 		if (req.method === "POST" && path === "/api/run") {
-			const body = JSON.parse((await readBody(req)) || "{}") as {
+			const body = await readJsonBody<{
 				task?: string;
 				template?: string;
 				repo?: string;
-			};
+			}>(req);
 			if ("mode" in body) {
 				return json(res, 400, { error: "mode selection has been removed; runs always use real pi workers" });
 			}
@@ -206,6 +235,9 @@ const server = createServer(async (req, res) => {
 		if (req.method === "GET") return serveStatic(res, path);
 		res.writeHead(405).end();
 	} catch (err) {
+		if (err instanceof TemplateRequestError) {
+			return json(res, err.status, { error: err.message, errors: err.errors });
+		}
 		json(res, 500, { error: String((err as Error).message) });
 	}
 });

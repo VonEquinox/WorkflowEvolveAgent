@@ -12,7 +12,7 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "tsx src/selftest.ts",
+    "test": "tsx src/selftest.ts && node --test gui/editor-model.test.js",
     "smoke": "tsx src/smoke-export.ts",
     "wea": "tsx src/cli.ts",
     "run": "tsx src/cli.ts run",

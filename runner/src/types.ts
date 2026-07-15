@@ -86,6 +86,11 @@ export interface WorkflowGraph {
 	loops: BoundedLoop[];
 }
 
+/** Optional editor-only layout metadata; ignored by scheduling and graph validation. */
+export interface WorkflowTemplateUi {
+	positions: Record<string, { x: number; y: number }>;
+}
+
 // ---- Budget -----------------------------------------------------------------
 
 export interface NodeBudget {
