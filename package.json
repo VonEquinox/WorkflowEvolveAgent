@@ -1,0 +1,42 @@
+{
+  "name": "workflow-evolve-agent",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "WorkflowEvolveAgent and its installable Pi MCP-over-bash bridge",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/VonEquinox/WorkflowEvolveAgent.git"
+  },
+  "keywords": [
+    "pi-package",
+    "mcp",
+    "coding-agent",
+    "workflow"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "wea-mcp": "./bin/wea-mcp"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions/wea-mcp.ts"
+    ]
+  },
+  "scripts": {
+    "typecheck": "npm --prefix mcp-bridge run typecheck && npm --prefix runner run typecheck",
+    "test": "npm --prefix mcp-bridge test && npm run test:pi-extension && npm --prefix runner test",
+    "test:pi-extension": "tsx mcp-bridge/src/pi-extension-selftest.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@modelcontextprotocol/server-filesystem": "^2026.7.10",
+    "tsx": "^4.19.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.5.0"
+  }
+}

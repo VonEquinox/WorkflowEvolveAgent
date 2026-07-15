@@ -160,7 +160,8 @@ Offline BM25 retrieval is **only** a fallback when `WEA_*` is missing or
 |---------|------|
 | **CLI** | Batch / CI / scripted runs |
 | **Web GUI** | Human-in-the-loop visualization |
-| **pi SDK embed** | Node execution engine (not interactive pi TUI plugin) |
+| **pi SDK embed** | Node execution engine for workflow graph nodes |
+| **Interactive Pi package** | Optional MCP-over-bash bridge (`pi install …`); not the WEA graph orchestrator |
 | **`install.sh`** | One-shot deps + offline tests |
 
 ---
@@ -169,8 +170,9 @@ Offline BM25 retrieval is **only** a fallback when `WEA_*` is missing or
 
 | Is | Is not |
 |----|--------|
-| A **workflow runtime** that embeds the **pi SDK** | An interactive `pi` TUI extension you `pi install` and chat with |
-| One **graph node** = one headless `createAgentSession` | Sharing context with your current pi chat session |
+| A **workflow runtime** that embeds the **pi SDK** | A `/wea` graph-orchestrator command inside your current Pi chat |
+| An installable Pi package for the **MCP bridge** | Installing the full workflow scheduler into the Pi TUI |
+| One **graph node** = one headless `createAgentSession` | Sharing graph-node context with your current Pi chat session |
 | Templates as **versioned, measurable assets** | Prompt-only multi-agent glue |
 | Safety via **measurement (champion)** | Safety via forbidding redesign ideas |
 
@@ -1013,7 +1015,22 @@ Deep dives: [`runner/README.md`](./runner/README.md), [`mcp-bridge/README.md`](.
 
 ## 17. Quick start
 
-### One-shot install
+### Install the MCP bridge into interactive Pi and open Pi
+
+```bash
+pi install git:github.com/VonEquinox/WorkflowEvolveAgent && pi
+```
+
+No extra config is required for a first run: Pi receives a `workspace` MCP
+filesystem server restricted to the directory where it was launched. Use
+`/wea-mcp` to inspect status. To connect your own servers, create
+`.pi/mcp.servers.json`, `~/.pi/agent/mcp.servers.json`, or point
+`WEA_MCP_CONFIG` at a config file; see [`mcp-bridge/README.md`](./mcp-bridge/README.md).
+
+This installs the **MCP bridge** into interactive Pi. The full WEA workflow graph
+runtime remains the CLI/GUI described below.
+
+### One-shot full runtime install
 
 ```bash
 git clone https://github.com/VonEquinox/WorkflowEvolveAgent.git
@@ -1089,7 +1106,7 @@ cd mcp-bridge && npm test && bash scripts/e2e.sh
 **Pending (wiring)**  
 - Multi-pair live A/B on a stable endpoint  
 - Exact cache hooked into every spawn path  
-- MCP bridge extension wired into runner node sessions  
+- MCP bridge extension wired into WEA runner node sessions (the interactive Pi package is already wired)
 - Automated paired live A/B orchestration and champion promotion wiring
 - Fully automatic `run → improve → promote` loop  
 

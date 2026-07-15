@@ -84,25 +84,32 @@ export class McpBridge {
 
 	/** Connect all servers (hot), then open the socket. Idempotent-ish: call once. */
 	async start(): Promise<void> {
-		for (const config of this.configs) {
-			const client = new Client({ name: "wea-mcp-bridge", version: "0.1.0" }, { capabilities: {} });
-			const transport =
-				config.transport === "stdio"
-					? new StdioClientTransport({ command: config.command, args: config.args, env: config.env })
-					: new StreamableHTTPClientTransport(new URL(config.url));
-			await client.connect(transport);
-			const listed = await client.listTools();
-			const tools: ToolBrief[] = listed.tools.map((t) => ({
-				id: `${config.name}.${t.name}`,
-				server: config.name,
-				name: t.name,
-				description: t.description ?? "",
-				readOnly: t.annotations?.readOnlyHint === true,
-				destructive: t.annotations?.destructiveHint === true,
-			}));
-			this.connected.push({ config, client, tools });
+		try {
+			for (const config of this.configs) {
+				const client = new Client({ name: "wea-mcp-bridge", version: "0.1.0" }, { capabilities: {} });
+				const transport =
+					config.transport === "stdio"
+						? new StdioClientTransport({ command: config.command, args: config.args, env: config.env })
+						: new StreamableHTTPClientTransport(new URL(config.url));
+				await client.connect(transport);
+				const listed = await client.listTools();
+				const tools: ToolBrief[] = listed.tools.map((t) => ({
+					id: `${config.name}.${t.name}`,
+					server: config.name,
+					name: t.name,
+					description: t.description ?? "",
+					readOnly: t.annotations?.readOnlyHint === true,
+					destructive: t.annotations?.destructiveHint === true,
+				}));
+				this.connected.push({ config, client, tools });
+			}
+			await this.listen();
+		} catch (error) {
+			// A partially connected bridge must not leak child MCP processes when a
+			// later server or the unix socket fails during Pi startup.
+			await this.dispose();
+			throw error;
 		}
-		await this.listen();
 	}
 
 	private allTools(): ToolBrief[] {

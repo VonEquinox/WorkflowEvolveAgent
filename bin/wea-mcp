@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Thin launcher installed on PATH by the Pi extension.
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+TSX="$ROOT/node_modules/.bin/tsx"
+if [[ ! -x "$TSX" ]]; then
+  printf 'wea-mcp: dependencies are missing; reinstall with: pi install git:github.com/VonEquinox/WorkflowEvolveAgent\n' >&2
+  exit 1
+fi
+exec "$TSX" "$ROOT/mcp-bridge/src/cli.ts" "$@"

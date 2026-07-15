@@ -51,10 +51,12 @@ const USAGE_NOTE = (socketReady: boolean): string =>
 export interface McpBridgeHandle {
 	/** the pi InlineExtension factory to register on the resource loader. */
 	factory: (pi: unknown) => void;
-	/** resolves once the bridge has connected all servers and is listening. */
+	/** resolves after startup succeeds or fails; inspect status() afterwards. */
 	ready: Promise<void>;
 	/** socket path this session's CLI must talk to (also set in process.env). */
 	socketPath: string;
+	/** Current startup state, suitable for diagnostics and slash commands. */
+	status: () => { state: "starting" | "ready" | "failed"; error?: string };
 	/** tear down socket + all server connections; call after session dispose. */
 	dispose: () => Promise<void>;
 }
@@ -67,32 +69,44 @@ export function makeMcpBridgeExtension(opts: McpBridgeExtensionOptions): McpBrid
 	// Expose the socket to any bash the session spawns (pi inherits process.env).
 	process.env[SOCKET_ENV] = socketPath;
 
-	let started = false;
+	let state: "starting" | "ready" | "failed" = "starting";
+	let failure: string | undefined;
 	const ready = bridge
 		.start()
 		.then(() => {
-			started = true;
+			state = "ready";
 		})
 		.catch((err) => {
 			// Fail loud but don't crash the session: bash just won't find a bridge.
-			console.error(`[wea-mcp] bridge failed to start: ${String((err as Error)?.message ?? err)}`);
+			state = "failed";
+			failure = String((err as Error)?.message ?? err);
+			console.error(`[wea-mcp] bridge failed to start: ${failure}`);
 		});
 
 	const factory = (pi: any): void => {
 		pi.on("before_agent_start", async (event: { systemPrompt: string }) => {
-			return { systemPrompt: `${event.systemPrompt}\n\n${USAGE_NOTE(started)}` };
+			const note = state === "failed"
+				? `## MCP bridge unavailable\nWEA MCP bridge failed to start: ${failure ?? "unknown error"}. Fix the configuration, then run /reload.`
+				: USAGE_NOTE(state === "ready");
+			return { systemPrompt: `${event.systemPrompt}\n\n${note}` };
 		});
 		// If pi drives session lifecycle, tie teardown to it too (belt & braces;
 		// the runner also calls dispose() explicitly).
 		pi.on("session_shutdown", async () => {
-			await bridge.dispose();
+			await dispose();
 		});
+	};
+
+	const dispose = async (): Promise<void> => {
+		await bridge.dispose();
+		if (process.env[SOCKET_ENV] === socketPath) delete process.env[SOCKET_ENV];
 	};
 
 	return {
 		factory,
 		ready,
 		socketPath,
-		dispose: () => bridge.dispose(),
+		status: () => ({ state, ...(failure ? { error: failure } : {}) }),
+		dispose,
 	};
 }

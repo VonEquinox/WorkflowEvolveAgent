@@ -27,6 +27,9 @@ After install, CLI:
   ./bin/wea run --task "..." --offline-plan
   ./bin/wea gui
 
+Interactive Pi MCP bridge (one command):
+  pi install git:github.com/VonEquinox/WorkflowEvolveAgent && pi
+
 Requirements: Node.js >= 20, npm, bash
 EOF
       exit 0
@@ -58,6 +61,14 @@ fi
 ok "Node $(node -v) / npm $(npm -v)"
 
 # ---- packages -------------------------------------------------------------
+bold "Installing Pi package / MCP bridge launcher"
+(
+  cd "$ROOT"
+  npm install --no-fund --no-audit
+)
+chmod +x "$ROOT/bin/wea-mcp" 2>/dev/null || true
+ok "Pi package dependencies + $ROOT/bin/wea-mcp"
+
 bold "Installing @wea/runner"
 (
   cd "$ROOT/runner"
@@ -116,7 +127,11 @@ if [[ "$SKIP_TEST" -eq 0 ]]; then
     cd "$ROOT/mcp-bridge"
     npm test
   )
-  ok "mcp-bridge: resident MCP + reuse"
+  (
+    cd "$ROOT"
+    npm run test:pi-extension
+  )
+  ok "mcp-bridge: resident MCP + reuse + installable Pi extension"
 else
   warn "skipped self-tests (--skip-test)"
 fi
@@ -142,8 +157,11 @@ Next steps:
        README.md          English
        README.zh-CN.md    中文
 
-Note: WEA embeds the pi SDK as a library (createAgentSession per graph node).
-It is not installed into the interactive \`pi\` TUI by this script.
+Interactive Pi MCP bridge (installs from GitHub and opens Pi):
+       pi install git:github.com/VonEquinox/WorkflowEvolveAgent && pi
+
+The Pi package adds the MCP-over-bash bridge. The full graph orchestrator remains
+available through ./bin/wea run and ./bin/wea gui.
 EOF
 
 if [[ "$START_GUI" -eq 1 ]]; then

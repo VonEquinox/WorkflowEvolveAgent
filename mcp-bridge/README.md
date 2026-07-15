@@ -1,5 +1,17 @@
 # @wea/mcp-bridge
 
+## Install into interactive Pi
+
+```bash
+pi install git:github.com/VonEquinox/WorkflowEvolveAgent && pi
+```
+
+That single command installs this repository as a Pi package and opens Pi. With
+no configuration file, the extension immediately exposes a `workspace` MCP
+filesystem server restricted to the directory where Pi was launched. Run
+`/wea-mcp` for status; the agent receives `wea-mcp search/describe/call`
+instructions automatically.
+
 **MCP-over-bash bridge.** The model sees *one* tool — `bash` — and reaches any
 number of MCP servers through a single command, `wea-mcp`. Results come back into
 the shell (stdout or a `--out` file), where the model filters them with `rg` /
@@ -65,9 +77,20 @@ raw shell call cannot:
 
 ## Config
 
-Copy `mcp.servers.example.json` → `mcp.servers.json` and list your servers
-(`stdio` command or `http` url; `env` values may reference `$VARS`). Secrets stay
-in env / the gitignored config — never in the repo.
+The interactive Pi extension checks, in order:
+
+1. `WEA_MCP_CONFIG` (absolute path or relative to Pi's working directory)
+2. `<project>/.pi/mcp.servers.json`
+3. `~/.pi/agent/mcp.servers.json`
+4. this checkout's legacy `mcp-bridge/mcp.servers.json`
+5. no file: an automatic `workspace` filesystem server restricted to Pi's cwd
+
+Copy `mcp.servers.example.json` as a starting point and list your servers
+(`stdio` command or `http` URL). `$VAR` and `${VAR}` references are expanded in
+commands, arguments, URLs, and child `env` values; a missing variable fails
+closed. Server names and transport-specific fields are validated before any
+connection is opened. Secrets stay in environment variables or a gitignored
+config — never commit them.
 
 ## Verify
 

@@ -148,7 +148,7 @@ runs/<时间戳>-<id>/
 - 双 IR：`wea.trace/v1` + `wea.pvf.trace/v1` + manifest  
 - 调度事件日志、读写集、依赖观测  
 - MCP-over-bash：热连接、渐进披露、`--out` 落盘、RO 缓存  
-- 表面：CLI · GUI · 嵌入 pi SDK · `install.sh`  
+- 表面：CLI · GUI · 嵌入 pi SDK · 交互式 Pi MCP 包 · `install.sh`
 
 ---
 
@@ -156,8 +156,9 @@ runs/<时间戳>-<id>/
 
 | 是 | 不是 |
 |----|------|
-| 嵌入 **pi SDK** 的 workflow **运行时** | 交互式 `pi` TUI 插件（不能 `pi install` 后 `/wea`） |
-| 图节点 = 无界面 `createAgentSession` | 与当前 pi 聊天会话共享上下文 |
+| 嵌入 **pi SDK** 的 workflow **运行时** | 当前 Pi 对话里的 `/wea` 图编排命令 |
+| 可安装进交互式 Pi 的 **MCP bridge** | 把完整 WEA 调度器装进 Pi TUI |
+| 图节点 = 无界面 `createAgentSession` | 与当前 pi 聊天会话共享图节点上下文 |
 | 模板是**可测量的版本化资产** | 纯 prompt 拼起来的 multi-agent |
 | 安全靠**实测晋升** | 靠禁止 meta 改图想法 |
 
@@ -593,7 +594,22 @@ meta 可任意改图
 
 ## 12. 快速开始
 
-### 一键安装
+### 一条命令把 MCP bridge 装进 Pi 并启动
+
+```bash
+pi install git:github.com/VonEquinox/WorkflowEvolveAgent && pi
+```
+
+首次使用不需要额外配置：扩展会自动提供一个只允许访问 Pi 启动目录的
+`workspace` filesystem MCP。进入 Pi 后可执行 `/wea-mcp` 看状态；Agent 会自动
+收到 `wea-mcp search / describe / call` 的使用说明。
+
+要接入自己的 MCP server，可创建项目级 `.pi/mcp.servers.json`、用户级
+`~/.pi/agent/mcp.servers.json`，或者设置 `WEA_MCP_CONFIG`。完整格式见
+[`mcp-bridge/README.md`](./mcp-bridge/README.md)。这里装入 Pi 的是 **MCP bridge**；
+完整 WEA 图调度仍通过下面的 CLI / GUI 使用。
+
+### 完整运行时一键安装
 
 ```bash
 git clone https://github.com/VonEquinox/WorkflowEvolveAgent.git
@@ -640,7 +656,7 @@ npx tsx src/run.ts \
 **已验证（live）：** T2 真修 bug、T3 真加功能；meta 可出可运行 challenger。  
 **已验证（offline）：** 检索 / 缓存 / 冠军门；MCP bridge 全链路；Graph/角色 Schema；worktree 与 trace 回归。
 
-**待接线：** 多 pair 线上 A/B；cache 挂 spawn；bridge 挂 node session；全自动 champion promotion / evolve 闭环。
+**待接线：** 多 pair 线上 A/B；cache 挂 spawn；把 bridge 注入 WEA runner 的每个 node session（交互式 Pi 包已接通）；全自动 champion promotion / evolve 闭环。
 
 ---
 
